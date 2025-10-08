@@ -851,7 +851,7 @@ class NestedQueryBuilder
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
-        
+
         // Add EXISTS condition
         $this->db->where("EXISTS ({$compiled_subquery})", null, false);
 
@@ -896,7 +896,7 @@ class NestedQueryBuilder
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
-        
+
         // Add NOT EXISTS condition
         $this->db->where("NOT EXISTS ({$compiled_subquery})", null, false);
 
@@ -935,7 +935,7 @@ class NestedQueryBuilder
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
-        
+
         // Add OR EXISTS condition
         $this->db->or_where("EXISTS ({$compiled_subquery})", null, false);
 
@@ -976,7 +976,7 @@ class NestedQueryBuilder
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
-        
+
         // Add OR NOT EXISTS condition
         $this->db->or_where("NOT EXISTS ({$compiled_subquery})", null, false);
 
@@ -1533,7 +1533,7 @@ class NestedQueryBuilder
     {
         $count = 0;
         $length = strlen($expression);
-        
+
         for ($i = 0; $i < $length; $i++) {
             if ($expression[$i] === '(') {
                 $count++;
@@ -1545,7 +1545,7 @@ class NestedQueryBuilder
                 }
             }
         }
-        
+
         // Should be zero if balanced
         return $count === 0;
     }
@@ -1619,16 +1619,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if (!empty($table_from_get)) {
             return $this->extract_table_name($table_from_get);
         }
-        
+
         // Second priority: temporary table name from get() method
         if (!empty($this->_temp_table_name)) {
             return $this->extract_table_name($this->_temp_table_name);
         }
-        
+
         // Third priority: try to get from compiled select to extract table name
         try {
             $compiled = $this->get_compiled_select('', false); // Don't reset
-            
+
             // Extract table name from FROM clause using regex
             if (preg_match('/FROM\s+`?([a-zA-Z_][a-zA-Z0-9_]*)`?(?:\s+(?:AS\s+)?`?([a-zA-Z_][a-zA-Z0-9_]*)`?)?/i', $compiled, $matches)) {
                 return $matches[1]; // Return the table name without alias
@@ -1637,7 +1637,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // Fallback: if no FROM is set yet, return null
             return null;
         }
-        
+
         return null;
     }
 
@@ -1652,10 +1652,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Remove any alias by splitting on space and taking first part
         $table_parts = explode(' ', trim($table_string));
         $table_name = trim($table_parts[0]);
-        
+
         // Remove backticks if present
         $table_name = trim($table_name, '`');
-        
+
         return $table_name;
     }
 
@@ -2042,7 +2042,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
-        
+
         // Add EXISTS condition
         $this->where("EXISTS ({$compiled_subquery})", null, false);
 
@@ -2093,7 +2093,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
-        
+
         // Add NOT EXISTS condition
         $this->where("NOT EXISTS ({$compiled_subquery})", null, false);
 
@@ -2126,7 +2126,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
-        
+
         // Add OR EXISTS condition
         $this->or_where("EXISTS ({$compiled_subquery})", null, false);
 
@@ -2159,7 +2159,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
-        
+
         // Add OR NOT EXISTS condition
         $this->or_where("NOT EXISTS ({$compiled_subquery})", null, false);
 
@@ -3589,7 +3589,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         $this->process_pending_where_has();
         $this->process_pending_aggregates();
-        
+
         // Process pending WHERE EXISTS relations
         $parent_table = !empty($table) ? $table : $this->_temp_table_name;
         if (!empty($parent_table)) {
@@ -3624,7 +3624,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Process pending conditions first
         $this->process_pending_where_has();
         $this->process_pending_aggregates();
-        
+
         // Process pending WHERE EXISTS relations  
         $parent_table = $this->_temp_table_name;
         if (!empty($parent_table)) {
@@ -3636,39 +3636,39 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // For queries with eager loading, we need to use a different approach
             // We'll temporarily disable calc_rows, get the data with eager loading,
             // then run a separate count query with SQL_CALC_FOUND_ROWS
-            
+
             // First, get the compiled query for counting (without eager loading)
             $count_query = clone $this;
             $count_query->with_relations = []; // Remove relations for count query
             $compiled_count_query = $count_query->get_compiled_select('', false);
-            
+
             // Add LIMIT for the count query if specified
             if ($limit !== null) {
                 $compiled_count_query .= ' LIMIT ' . (int)$limit;
                 if ($offset !== null && $offset > 0) $compiled_count_query .= ' OFFSET ' . (int)$offset;
             }
-            
+
             // Execute count query with SQL_CALC_FOUND_ROWS
             $count_query_with_calc_rows = preg_replace('/^SELECT\s+/i', 'SELECT SQL_CALC_FOUND_ROWS ', $compiled_count_query);
             $this->query($count_query_with_calc_rows); // This sets FOUND_ROWS() for later use
-            
+
             // Store the count query before executing FOUND_ROWS()
             $main_count_query = $this->last_query();
-            
+
             // Get the found_rows count
             $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
             $found_rows = 0;
             if ($found_rows_query && $found_rows_query->num_rows() > 0) $found_rows = (int) $found_rows_query->row()->total;
-            
+
             // Restore the count query as last_query for debugging purposes
             $this->queries[] = $main_count_query;
-            
+
             // Reset calc_rows flag before eager loading
             $this->_calc_rows_enabled = false;
-            
+
             // Now get the actual data with eager loading
             $eager_result = $this->get_with_eager_loading('', $limit, $offset, $found_rows);
-            
+
             // Return the eager result (already has found_rows)
             return $eager_result;
         }
@@ -3692,18 +3692,18 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Execute the raw query
         $result = $this->query($final_query);
-        
+
         // Store the main query before executing FOUND_ROWS()
         $main_query = $this->last_query();
-        
+
         // Get the found_rows count
         $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
         $found_rows = 0;
         if ($found_rows_query && $found_rows_query->num_rows() > 0) $found_rows = (int) $found_rows_query->row()->total;
-        
+
         // Restore the main query as last_query for debugging purposes
         $this->queries[] = $main_query;
-        
+
         // Return CustomQueryBuilderResult with found_rows
         return new CustomQueryBuilderResult($result->result_array(), $found_rows);
     }
@@ -3726,10 +3726,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if ($limit !== null) $this->limit($limit, $offset);
 
         if (
-                !empty($this->with_relations)       || 
-                !empty($this->pending_where_has)    || 
-                !empty($this->pending_aggregates)   ||
-                !empty($this->pending_where_exists)
+            !empty($this->with_relations)       ||
+            !empty($this->pending_where_has)    ||
+            !empty($this->pending_aggregates)   ||
+            !empty($this->pending_where_exists)
         ) return $this->get();
 
         $original_debug = $this->db_debug;
@@ -4141,7 +4141,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
             if (is_callable($where_has_config['callback'])) {
                 $where_has_config['callback']($subquery);
-                
+
                 // Process any pending operations in subquery recursively
                 if (!empty($subquery->pending_where_exists)) {
                     $subquery->process_pending_where_exists($where_has_config['relation']);
@@ -4196,11 +4196,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if (empty($current_select)) $this->select('*');
 
         $mainTable = $this->qb_from[0];
-        
+
         // Extract table name and alias from FROM clause
         $main_table_name = '';
         $main_table_alias = '';
-        
+
         if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $mainTable, $matches)) {
             $main_table_name = $matches[1];
             $main_table_alias = isset($matches[2]) ? $matches[2] : $main_table_name;
@@ -4279,7 +4279,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
             if (is_callable($aggregate_config['callback'])) {
                 $aggregate_config['callback']($subquery);
-                
+
                 // Process any pending operations in subquery recursively
                 if (!empty($subquery->pending_where_exists)) {
                     $subquery->process_pending_where_exists($aggregate_config['relation']);
@@ -4295,7 +4295,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // Add subquery directly to qb_select array to preserve existing SELECT fields
             $compiled_subquery = $subquery->get_compiled_select();
             $subquery_select = "($compiled_subquery) AS " . $this->protect_identifiers($aggregate_config['alias']);
-            
+
             // Directly add to qb_select array instead of using select() method
             $this->qb_select[] = $subquery_select;
             $this->qb_no_escape[] = null; // Track that this field should not be escaped further
@@ -4365,7 +4365,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
                 $foreign_key_safe = $this->protect_identifiers($foreign_key_with_table, true);
                 $local_key_safe = $this->protect_identifiers($local_key_with_table, true);
-                
+
                 $subquery->where("{$foreign_key_safe} = {$local_key_safe}", null, false);
             }
 
@@ -4375,7 +4375,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     throw new InvalidArgumentException('Callback must be callable');
                 }
                 $exists_config['callback']($subquery);
-                
+
                 // Process any pending WHERE EXISTS operations in the subquery recursively
                 // This allows nested where_exists_relation calls to work properly
                 if (!empty($subquery->pending_where_exists)) {
@@ -4385,10 +4385,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
             // Get the compiled subquery
             $compiled_subquery = $subquery->get_compiled_select();
-            
+
             // Add EXISTS/NOT EXISTS condition based on type
             $exists_clause = "{$exists_config['exists_type']} ({$compiled_subquery})";
-            
+
             if ($exists_config['type'] === 'OR') {
                 $this->or_where($exists_clause, null, false);
             } else {
@@ -5007,7 +5007,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     // If no SELECT is specified, add * to get all columns
                     $relation_builder->db->select('*');
                 }
-                
+
                 foreach ($relation_builder->pending_aggregates as $aggregate_config) {
                     $subquery = clone $this;
                     $subquery->reset_query();
@@ -5245,6 +5245,81 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $relation_builder->db->select($column_name, false);
             }
         }
+    }
+
+    /**
+     * Execute callback within a database transaction
+     * 
+     * @param callable $callback Callback function to execute within transaction
+     * @param bool $strict If true, throws exception on transaction failure (default: false)
+     * @return mixed Return value from callback, or false if transaction failed (when not in strict mode)
+     * @throws InvalidArgumentException If callback is not callable
+     * @throws Exception If transaction fails and strict mode is enabled
+     */
+    public function transaction($callback, $strict = false)
+    {
+        if (!is_callable($callback)) throw new InvalidArgumentException('Callback must be callable');
+
+        // Set error reporting untuk catch semua error
+        $old_error_reporting = error_reporting();
+        error_reporting(E_ALL);
+
+        // Set error handler yang agresif
+        $old_error_handler = set_error_handler(function ($errno, $errstr, $errfile, $errline) {
+            throw new ErrorException($errstr, 0, $errno, $errfile, $errline);
+        }, E_ALL);
+
+        $this->trans_begin();
+
+        $result = null;
+        $exception = null;
+
+        try {
+            // Execute callback
+            $result = call_user_func($callback);
+        } catch (Exception $e) {
+            $exception = $e;
+        }
+
+        // Restore error handler dan error reporting
+        error_reporting($old_error_reporting);
+
+        if ($old_error_handler !== null) {
+            set_error_handler($old_error_handler);
+        } else {
+            restore_error_handler();
+        }
+
+        if ($exception !== null) {
+            $this->trans_rollback();
+            if ($strict) throw $exception;
+
+            // Log error
+            if (function_exists('log_message')) {
+                log_message('error', 'Transaction failed: ' . $exception->getMessage());
+            }
+
+            return false;
+        }
+
+        if ($this->trans_status() === false) {
+            $this->trans_rollback();
+
+            if ($strict) {
+                throw new Exception('Database transaction failed. All changes have been rolled back.');
+            }
+
+            if (function_exists('log_message')) {
+                log_message('error', 'Database transaction failed');
+            }
+
+            return false;
+        }
+
+        $this->trans_commit();
+
+        // Return hasil callback
+        return $result;
     }
 
     /**
