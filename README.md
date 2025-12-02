@@ -11,21 +11,21 @@
 
 ## 📋 Table of Contents
 
-- [Fitur Utama](##fitur-utama)
-- [Persyaratan Sistem](##persyaratan-sistem)
-- [Instalasi](##instalasi)
-- [Konfigurasi](##konfigurasi)
-- [Panduan Penggunaan](##panduan-penggunaan)
-  - [Basic Query](##basic-query)
-  - [Conditional WHERE](##conditional-where)
-  - [Eager Loading Relations](##eager-loading-relations)
-  - [Aggregates & Calculations](##aggregates--calculations)
-  - [Advanced Features](##advanced-features)
-- [API Reference](##api-reference)
-- [Contoh Implementasi](##contoh-implementasi)
-- [Troubleshooting](##troubleshooting)
-- [Kontribusi](##kontribusi)
-- [Lisensi](##lisensi)
+- [Fitur Utama](#fitur-utama)
+- [Persyaratan Sistem](#persyaratan-sistem)
+- [Instalasi](#instalasi)
+- [Konfigurasi](#konfigurasi)
+- [Panduan Penggunaan](#panduan-penggunaan)
+  - [Basic Query](#basic-query)
+  - [Conditional WHERE](#conditional-where)
+  - [Eager Loading Relations](#eager-loading-relations)
+  - [Aggregates & Calculations](#aggregates--calculations)
+  - [Advanced Features](#advanced-features)
+- [API Reference](#api-reference)
+- [Contoh Implementasi](#contoh-implementasi)
+- [Troubleshooting](#troubleshooting)
+- [Kontribusi](#kontribusi)
+- [Lisensi](#lisensi)
 
 ---
 
