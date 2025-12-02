@@ -59,7 +59,7 @@
 ## 📦 Persyaratan Sistem
 
 ```
-PHP: >= 7.0.0
+PHP: >= 7.0. 0
 CodeIgniter: 3.x
 MySQL: 5.7+ (atau kompatibel)
 ```
@@ -68,7 +68,9 @@ MySQL: 5.7+ (atau kompatibel)
 
 ## 🔧 Instalasi
 
-### Langkah 1: Download atau Clone Repository
+### Metode 1: Standard Installation (Recommended)
+
+#### Langkah 1: Download atau Clone Repository
 
 ```bash
 # Menggunakan Git
@@ -77,7 +79,7 @@ git clone https://github.com/danarreichi/custom-query-builder.git
 # Atau download ZIP dari GitHub
 ```
 
-### Langkah 2: Copy File ke CodeIgniter
+#### Langkah 2: Copy File ke CodeIgniter
 
 ```bash
 # Copy library file ke CodeIgniter
@@ -89,7 +91,7 @@ cp CustomQueryBuilder.php /path/to/your/ci3-project/application/libraries/
 #     └── CustomQueryBuilder.php
 ```
 
-### Langkah 3: Autoload Library (Opsional)
+#### Langkah 3: Autoload Library (Opsional)
 
 Edit `application/config/autoload.php`:
 
@@ -101,7 +103,7 @@ $autoload['libraries'] = array('database');
 $this->load->library('CustomQueryBuilder');
 ```
 
-### Langkah 4: Konfigurasi Database
+#### Langkah 4: Konfigurasi Database
 
 Edit `application/config/database.php`:
 
@@ -128,6 +130,109 @@ $db['default'] = array(
     'save_queries' => TRUE
 );
 ```
+
+---
+
+### Metode 2: Direct System Injection (Advanced)
+
+> ⚠️ Metode ini melakukan injeksi langsung ke dalam core system CodeIgniter.  Gunakan jika Anda ingin CustomQueryBuilder otomatis tersedia di seluruh aplikasi tanpa perlu memanggil library secara manual.
+
+#### Langkah 1: Download atau Clone Repository
+
+```bash
+# Menggunakan Git
+git clone https://github.com/danarreichi/custom-query-builder.git
+
+# Atau download ZIP dari GitHub
+```
+
+#### Langkah 2: Injeksi CustomQueryBuilder ke Core System
+
+Salin file `CustomQueryBuilder.php` ke direktori core CodeIgniter Anda:
+
+```bash
+# Contoh untuk Laragon:
+cp CustomQueryBuilder.php C:\laragon\www\your_project\system\core\CustomQueryBuilder.php
+
+# Atau untuk Linux/Mac:
+cp CustomQueryBuilder.php /path/to/your/ci3-project/system/core/CustomQueryBuilder.php
+
+# Struktur file setelah injeksi:
+# system/
+# └── core/
+#     └── CustomQueryBuilder.php
+```
+
+#### Langkah 3: Modifikasi File Database Core
+
+Buka file `system/database/DB.php` dan tambahkan require statement di bagian atas file (setelah namespace/class declarations):
+
+```php
+// Contoh: Di system/database/DB.php
+// Tambahkan di bagian paling atas sebelum class definitions
+
+require_once(__DIR__ . '/../core/CustomQueryBuilder.php');
+
+// Jika menggunakan custom query builder sebagai driver/extension,
+// pastikan CustomQueryBuilder di-load sebelum query builder standar
+```
+
+Kemudian, modifikasi bagian inisialisasi query builder agar menggunakan CustomQueryBuilder.  Cari bagian yang menginisialisasi query builder dan pastikan CustomQueryBuilder ter-inject:
+
+```php
+// Contoh (sesuaikan dengan struktur file DB.php Anda):
+// Ganti pemanggilan query builder dengan CustomQueryBuilder
+// Sehingga saat $this->db dipanggil di controller/model,
+// otomatis menggunakan CustomQueryBuilder
+```
+
+#### Langkah 4: Konfigurasi Database
+
+Edit `application/config/database.php` sesuai kebutuhan project Anda (sama seperti Metode 1):
+
+```php
+$db['default'] = array(
+    'hostname' => 'localhost',
+    'username' => 'root',
+    'password' => '',
+    'database' => 'your_database',
+    // ... konfigurasi lainnya
+);
+```
+
+#### Langkah 5: Verifikasi Instalasi
+
+Buat file test untuk memverifikasi bahwa CustomQueryBuilder sudah terintegrasi:
+
+```php
+<? php
+// Di controller Anda
+class Test_controller extends CI_Controller {
+    
+    public function index()
+    {
+        // Test menggunakan CustomQueryBuilder methods
+        $users = $this->db->from('users')
+                          ->with_count('posts', 'user_id', 'id')
+                          ->get()
+                          ->result();
+        
+        var_dump($users);  // Jika bekerja, CustomQueryBuilder sudah ter-inject
+    }
+}
+```
+
+---
+
+### Perbedaan Metode 1 vs Metode 2
+
+| Aspek | Metode 1 (Standard) | Metode 2 (Injection) |
+|-------|---------------------|----------------------|
+| Lokasi File | `application/libraries/` | `system/core/` |
+| Autoload | Manual atau via config | Otomatis |
+| Kompatibilitas | Lebih aman saat update CI | Rawan jika update CI |
+| Setup Complexity | Lebih sederhana | Lebih kompleks |
+| Best For | Production environments | Development/Custom projects |
 
 ---
 
@@ -445,7 +550,7 @@ public function get_users_with_post_count()
 // Usage
 $users = $this->db->get_users_with_post_count();
 foreach ($users as $user) {
-    echo $user->name .  ' - Posts: ' . $user->posts_count;
+    echo $user->name .   ' - Posts: ' . $user->posts_count;
 }
 ```
 
@@ -838,7 +943,7 @@ $first_user = $this->db->where('status', 'active')
 $exists = $this->db->where('email', 'john@example.com')
                    ->exists('users');
 
-if (! $exists) {
+if (!  $exists) {
     echo "User not found";
 }
 
@@ -1141,11 +1246,20 @@ $this->db->limit(1000)->offset(0)->get();
 $this->db->with_sum('items', 'order_id', 'id', 'price * quantity', true);
 
 // ❌ Invalid - dangerous pattern
-$this->db->with_sum('items', 'order_id', 'id', 'SELECT * FROM... ', true);
+$this->db->with_sum('items', 'order_id', 'id', 'SELECT * FROM...  ', true);
 
 // ✅ Valid - allowed functions
 $allowed = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'ROUND', 'FLOOR', 'DATEDIFF', etc];
 ```
+
+### Issue: Metode 2 (Injection) tidak berfungsi
+
+**Solusi:**
+- Pastikan file `CustomQueryBuilder.php` sudah ada di `system/core/`
+- Verifikasi require statement di `system/database/DB.php` sudah ditambahkan
+- Cek bahwa tidak ada conflict dengan class definitions lain
+- Test dengan membuat controller sederhana untuk verify functionality
+- Jika masih error, coba rollback ke Metode 1 (Standard Installation)
 
 ---
 
@@ -1155,9 +1269,9 @@ Kami menyambut kontribusi!  Silakan:
 
 1. Fork repository
 2. Buat branch untuk feature (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add some AmazingFeature'`)
+3.  Commit changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push ke branch (`git push origin feature/AmazingFeature`)
-5. Buka Pull Request
+5.  Buka Pull Request
 
 ---
 
