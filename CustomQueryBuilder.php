@@ -2,6 +2,406 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 require BASEPATH . 'database/DB_query_builder.php';
+/**
+ * Query Validation Trait
+ *
+ * Provides shared validation methods for SQL injection prevention
+ * Used by both NestedQueryBuilder and CustomQueryBuilder classes
+ *
+ * @package CustomQueryBuilder
+ * @author  Danar Ardiwinanto
+ * @version 1.0.0
+ */
+trait QueryValidationTrait
+{
+    /**
+     * Extract clean table name from table string (removes alias and backticks)
+     *
+     * @param string $table_string Table string that may contain alias and backticks
+     * @return string Clean table name
+     */
+    protected function extract_table_name($table_string)
+    {
+        // Remove any alias by splitting on space and taking first part
+        $table_parts = explode(' ', trim($table_string));
+        $table_name = trim($table_parts[0]);
+
+        // Remove backticks if present
+        $table_name = trim($table_name, '`');
+
+        return $table_name;
+    }
+
+    /**
+     * Extract table name or alias from table string
+     * Returns the alias if present, otherwise returns the table name
+     * 
+     * @param string $table_string Table string that may contain alias and backticks
+     * @return string Table alias or name
+     */
+    protected function extract_table_or_alias($table_string)
+    {
+        // Remove backticks first
+        $cleaned = str_replace('`', '', trim($table_string));
+
+        // Split by space to separate table name and alias
+        $parts = preg_split('/\s+/', $cleaned);
+
+        // If there are multiple parts, check for AS keyword
+        if (count($parts) >= 2) {
+            // If AS keyword exists, return the part after AS
+            $as_index = array_search('AS', array_map('strtoupper', $parts));
+            if ($as_index !== false && isset($parts[$as_index + 1])) {
+                return $parts[$as_index + 1];
+            }
+            // Otherwise return the last part (assumed to be alias)
+            return $parts[count($parts) - 1];
+        }
+
+        // No alias found, return the table name itself
+        return $parts[0];
+    }
+
+    /**
+     * Validate column name to prevent SQL injection
+     *
+     * @param string $column_name Column name to validate
+     * @return bool True if valid, false otherwise
+     */
+    protected function is_valid_column_name($column_name)
+    {
+        // Check if column name is string and not empty
+        if (!is_string($column_name) || empty($column_name)) {
+            return false;
+        }
+
+        // Allow only alphanumeric characters, underscores, and dots
+        // NO DASHES allowed to prevent SQL comment injection
+        $pattern = '/^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?$/';
+
+        if (!preg_match($pattern, $column_name)) {
+            return false;
+        }
+
+        // Check against common SQL injection patterns including dashes
+        $dangerous_patterns = [
+            '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
+            '/[\'";-]/',        // ADDED: Dash character blocked
+            '/--/',             // SQL comment pattern
+            '/\/\*/',           // Multi-line comment start
+            '/\*\//',           // Multi-line comment end
+            '/\bxp_/',          // Extended stored procedures
+            '/\bsp_/',          // Stored procedures
+            '/\|\|/',           // OR operator in some SQL dialects
+            '/&&/',             // AND operator in some SQL dialects
+            '/\s+--/',          // Space followed by comment
+            '/-{2,}/',          // Multiple dashes
+        ];
+
+        foreach ($dangerous_patterns as $pattern) {
+            if (preg_match($pattern, $column_name)) {
+                return false;
+            }
+        }
+
+        // Check length to prevent buffer overflow attacks
+        if (strlen($column_name) > 64) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate table name to prevent SQL injection
+     *
+     * @param string $table_name Table name to validate
+     * @return bool True if valid, false otherwise
+     */
+    protected function is_valid_table_name($table_name)
+    {
+        // Check if table name is string and not empty
+        if (!is_string($table_name) || empty($table_name)) {
+            return false;
+        }
+
+        // Allow only alphanumeric characters and underscores
+        // NO DASHES allowed to prevent SQL comment injection
+        $pattern = '/^[a-zA-Z_][a-zA-Z0-9_]*$/';
+
+        if (!preg_match($pattern, $table_name)) {
+            return false;
+        }
+
+        // Check against common SQL injection patterns including dashes
+        $dangerous_patterns = [
+            '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
+            '/[\'";-]/',        // ADDED: Dash character blocked
+            '/--/',             // SQL comment pattern
+            '/\/\*/',           // Multi-line comment start
+            '/\*\//',           // Multi-line comment end
+            '/\s+--/',          // Space followed by comment
+            '/-{2,}/',          // Multiple dashes
+        ];
+
+        foreach ($dangerous_patterns as $pattern) {
+            if (preg_match($pattern, $table_name)) {
+                return false;
+            }
+        }
+
+        // Check length to prevent buffer overflow attacks
+        if (strlen($table_name) > 64) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate custom SQL expression for aggregation functions
+     *
+     * @param string $expression Custom SQL expression to validate
+     * @return bool True if valid, false otherwise
+     */
+    protected function is_valid_custom_expression($expression)
+    {
+        // Check if expression is string and not empty
+        if (!is_string($expression) || empty($expression)) {
+            return false;
+        }
+
+        // Allow mathematical operations, column names, parentheses, comparison operators, and common SQL functions
+        $allowed_pattern = '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/';
+
+        if (!preg_match($allowed_pattern, $expression)) {
+            return false;
+        }
+
+        // Block dangerous SQL patterns (but allow CASE/WHEN/THEN/ELSE/END and AND/OR for conditional expressions)
+        $dangerous_patterns = [
+            '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
+            '/[\'";]/',           // Quotes and semicolons
+            '/--/',               // SQL comments
+            '/\/\*/',             // Multi-line comment start
+            '/\*\//',             // Multi-line comment end
+            '/\|\|/',             // String concatenation operator
+            '/&&/',               // Logical AND operator
+            '/\bxp_/',            // Extended stored procedures
+            '/\bsp_/',            // Stored procedures
+            '/\bSELECT\b/i',      // Nested SELECT
+            '/\bFROM\b/i',        // FROM keyword
+            '/\bJOIN\b/i',        // JOIN keyword
+        ];
+
+        foreach ($dangerous_patterns as $pattern) {
+            if (preg_match($pattern, $expression)) {
+                return false;
+            }
+        }
+
+        // Validate that parentheses are balanced
+        if (!$this->are_parentheses_balanced($expression)) {
+            return false;
+        }
+
+        // Check length to prevent buffer overflow
+        if (strlen($expression) > 500) {
+            return false;
+        }
+
+        // Validate that expression contains only allowed column names and operators
+        $tokens = preg_split('/[\s\(\)\+\-\*\/,<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
+        foreach ($tokens as $token) {
+            // Skip numeric values
+            if (is_numeric($token)) {
+                continue;
+            }
+
+            // Skip common SQL functions and conditional keywords
+            $allowed_functions = [
+                'COALESCE',
+                'IFNULL',
+                'IF',
+                'NULLIF',
+                'CASE',
+                'WHEN',
+                'THEN',
+                'ELSE',
+                'END',
+                'SUM',
+                'AVG',
+                'COUNT',
+                'MIN',
+                'MAX',
+                'ROUND',
+                'FLOOR',
+                'CEIL',
+                'ABS',
+                'CONCAT',
+                'SUBSTRING',
+                'LENGTH',
+                'DATE',
+                'NOW',
+                'CURDATE',
+                'CURTIME',
+                'YEAR',
+                'MONTH',
+                'DAY',
+                'AND',
+                'OR',
+                'NOT',
+                'IS',
+                'NULL',
+                'AS',
+                'DISTINCT'
+            ];
+            if (in_array(strtoupper($token), $allowed_functions)) {
+                continue;
+            }
+
+            // Check if it's a valid column name (including backtick-wrapped names)
+            $cleaned_token = str_replace('`', '', $token);
+            if (!$this->is_valid_column_name($cleaned_token)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate calculation expression for mathematical operations with aggregates
+     *
+     * This method validates expressions that can contain:
+     * - Aggregate functions (SUM, AVG, COUNT, MIN, MAX)
+     * - Mathematical operations (+, -, *, /, %)
+     * - Date functions (DATEDIFF, TIMESTAMPDIFF)
+     * - Mathematical functions (ROUND, FLOOR, CEIL, ABS)
+     * - Conditional expressions (CASE WHEN)
+     *
+     * @param string $expression Mathematical expression to validate
+     * @return bool True if valid, false otherwise
+     */
+    protected function is_valid_calculation_expression($expression)
+    {
+        // Check if expression is string and not empty
+        if (!is_string($expression) || empty($expression)) {
+            return false;
+        }
+
+        // Allow more extensive pattern for calculation expressions
+        $allowed_pattern = '/^[\w\s\(\)\+\-\*\/\.,`%<>=]+$/';
+
+        if (!preg_match($allowed_pattern, $expression)) {
+            return false;
+        }
+
+        // Block dangerous SQL patterns but allow more functions for calculations
+        $dangerous_patterns = [
+            '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
+            '/[\'";]/',           // Quotes and semicolons
+            '/--/',               // SQL comments
+            '/\/\*/',             // Multi-line comment start
+            '/\*\//',             // Multi-line comment end
+            '/\|\|/',             // String concatenation
+            '/&&/',               // Logical AND
+            '/\bxp_/',            // Extended stored procedures
+            '/\bsp_/',            // Stored procedures
+            '/\bINTO\b/i',        // INTO keyword
+            '/\bVALUES\b/i',      // VALUES keyword
+        ];
+
+        foreach ($dangerous_patterns as $pattern) {
+            if (preg_match($pattern, $expression)) {
+                return false;
+            }
+        }
+
+        // Validate that parentheses are balanced
+        if (!$this->are_parentheses_balanced($expression)) {
+            return false;
+        }
+
+        // Check length to prevent buffer overflow
+        if (strlen($expression) > 500) {
+            return false;
+        }
+
+        // Validate tokens - allow aggregate functions and mathematical operations
+        $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
+        foreach ($tokens as $token) {
+            // Skip numeric values
+            if (is_numeric($token)) {
+                continue;
+            }
+
+            // Allow aggregate functions
+            $allowed_aggregates = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
+            if (in_array(strtoupper($token), $allowed_aggregates)) {
+                continue;
+            }
+
+            // Allow date functions
+            $allowed_date_functions = ['DATEDIFF', 'TIMESTAMPDIFF', 'DATE', 'NOW', 'CURDATE', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND'];
+            if (in_array(strtoupper($token), $allowed_date_functions)) {
+                continue;
+            }
+
+            // Allow mathematical functions
+            $allowed_math_functions = ['ROUND', 'FLOOR', 'CEIL', 'ABS', 'POW', 'SQRT', 'MOD'];
+            if (in_array(strtoupper($token), $allowed_math_functions)) {
+                continue;
+            }
+
+            // Allow conditional functions
+            $allowed_conditional = ['CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'IF', 'IFNULL', 'COALESCE', 'NULLIF'];
+            if (in_array(strtoupper($token), $allowed_conditional)) {
+                continue;
+            }
+
+            // Allow comparison operators
+            $allowed_operators = ['AND', 'OR', 'NOT', 'IS', 'NULL', 'TRUE', 'FALSE'];
+            if (in_array(strtoupper($token), $allowed_operators)) {
+                continue;
+            }
+
+            // Check if it's a valid column name (also allows table.column format)
+            if (!$this->is_valid_column_name($token)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if parentheses are balanced in expression
+     *
+     * @param string $expression Expression to check
+     * @return bool True if balanced, false otherwise
+     */
+    protected function are_parentheses_balanced($expression)
+    {
+        $count = 0;
+        $length = strlen($expression);
+
+        for ($i = 0; $i < $length; $i++) {
+            if ($expression[$i] === '(') {
+                $count++;
+            } elseif ($expression[$i] === ')') {
+                $count--;
+                // If we have more closing than opening, it's unbalanced
+                if ($count < 0) {
+                    return false;
+                }
+            }
+        }
+
+        // Should be zero if balanced
+        return $count === 0;
+    }
+}
 
 /**
  * Custom Query Builder Result Class
@@ -267,6 +667,7 @@ class CustomQueryBuilderResult
  */
 class NestedQueryBuilder
 {
+    use QueryValidationTrait;
     /**
      * @var array Array of with relations
      */
@@ -281,6 +682,11 @@ class NestedQueryBuilder
      * @var array Array of pending WHERE EXISTS relations
      */
     public $pending_where_exists = [];
+
+    /**
+     * @var array Array of pending WHERE aggregate conditions
+     */
+    public $pending_where_aggregates = [];
 
     /**
      * @var object Database instance
@@ -814,6 +1220,227 @@ class NestedQueryBuilder
     }
 
     /**
+     * Add WHERE condition based on calculated field alias (simplified syntax)
+     *
+     * This method provides a simplified way to filter by aggregate fields that were
+     * added using with_calculation(), with_sum(), with_avg(), with_min(), or with_max().
+     * It automatically references the aggregate subquery in the WHERE clause.
+     *
+     * IMPORTANT: You must call with_calculation() or with_sum()/with_avg()/etc. BEFORE
+     * calling where_aggregate() so the alias is registered.
+     *
+     * Example:
+     * // In callback context, filter by calculated field
+     * $this->db->with_many('orders', 'user_id', 'id', function($query) {
+     *     $query->with_calculation(['order_items' => 'total_revenue'], 'order_id', 'id', 'SUM(price * quantity)')
+     *           ->where_aggregate('total_revenue >', 1000);
+     * });
+     *
+     * @param string $condition Condition string in format "alias operator" (e.g., "sales_price >", "total_count >=")
+     * @param mixed $value Value to compare against
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function where_aggregate($condition, $value)
+    {
+        return $this->add_where_calculated('AND', $condition, $value);
+    }
+
+    /**
+     * Add OR WHERE condition based on calculated field alias (simplified syntax)
+     *
+     * Example:
+     * $this->db->with_many('orders', 'user_id', 'id', function($query) {
+     *     $query->with_sum(['items' => 'total_amount'], 'order_id', 'id', 'amount')
+     *           ->where_aggregate('total_amount >', 5000)
+     *           ->or_where_aggregate('total_amount =', 0);
+     * });
+     *
+     * @param string $condition Condition string in format "alias operator"
+     * @param mixed $value Value to compare against
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function or_where_aggregate($condition, $value)
+    {
+        return $this->add_where_calculated('OR', $condition, $value);
+    }
+
+    /**
+     * Internal method to add WHERE condition for calculated fields
+     *
+     * @param string $condition_type 'AND' or 'OR'
+     * @param string $condition Condition string with alias and operator
+     * @param mixed $value Value to compare against
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_where_calculated($condition_type, $condition, $value)
+    {
+        // Parse condition string to extract alias and operator
+        $pattern = '/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|>|<|>=|<=|!=|<>)\s*$/';
+        if (!preg_match($pattern, trim($condition), $matches)) {
+            throw new InvalidArgumentException("Invalid condition format: '{$condition}'. Expected format: 'alias operator' (e.g., 'sales_price >', 'total_count >=')");
+        }
+
+        $alias = $matches[1];
+        $operator = $matches[2];
+
+        // Find the aggregate configuration by alias
+        $aggregate_config = null;
+        foreach ($this->pending_aggregates as $config) {
+            if ($config['alias'] === $alias) {
+                $aggregate_config = $config;
+                break;
+            }
+        }
+
+        if ($aggregate_config === null) {
+            throw new InvalidArgumentException("Alias '{$alias}' not found. You must call with_calculation(), with_sum(), with_avg(), with_min(), or with_max() with this alias before using where_calculated().");
+        }
+
+        // Map aggregate type from pending_aggregates to where_aggregate type
+        $type_mapping = [
+            'count' => 'count',
+            'sum' => 'sum',
+            'avg' => 'avg',
+            'min' => 'min',
+            'max' => 'max',
+            'custom_calculation' => 'custom'
+        ];
+
+        $aggregate_type = isset($type_mapping[$aggregate_config['type']]) 
+            ? $type_mapping[$aggregate_config['type']] 
+            : 'custom';
+
+        // Use the aggregate configuration to build where_aggregate
+        return $this->add_where_aggregate(
+            $condition_type,
+            $aggregate_type,
+            $aggregate_config['relation'],
+            $aggregate_config['foreign_key'],
+            $aggregate_config['local_key'],
+            $operator,
+            $value,
+            $aggregate_config['column'],
+            $aggregate_config['is_custom_expression'],
+            $aggregate_config['callback']
+        );
+    }
+
+    /**
+     * Internal method to add WHERE aggregate condition
+     *
+     * @param string $condition_type 'AND' or 'OR'
+     * @param string $type Aggregate type
+     * @param string $relation Related table name
+     * @param string|array $foreignKey Foreign key(s)
+     * @param string|array $localKey Local key(s)
+     * @param string $operator Comparison operator
+     * @param mixed $value Value to compare against
+     * @param string|null $column Column name or expression
+     * @param bool $is_custom_expression Whether column is custom expression
+     * @param callable|null $callback Optional callback
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_where_aggregate($condition_type, $type, $relation, $foreignKey, $localKey, $operator, $value, $column = null, $is_custom_expression = false, $callback = null)
+    {
+        // Validate aggregate type
+        $allowed_types = ['count', 'sum', 'avg', 'min', 'max', 'custom'];
+        $type = strtolower($type);
+        if (!in_array($type, $allowed_types)) {
+            throw new InvalidArgumentException("Invalid aggregate type: {$type}. Allowed types: " . implode(', ', $allowed_types));
+        }
+
+        // Validate operator
+        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+        if (!in_array($operator, $allowed_operators)) {
+            throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
+        }
+
+        // Validate column for non-count types
+        if ($type !== 'count' && empty($column)) {
+            throw new InvalidArgumentException("Column is required for aggregate type: {$type}");
+        }
+
+        // Validate is_custom_expression is boolean
+        if (!is_bool($is_custom_expression)) {
+            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
+        }
+
+        // Validate column/expression
+        if ($column !== null) {
+            if ($type === 'custom') {
+                if (!$this->is_valid_calculation_expression($column)) {
+                    throw new InvalidArgumentException("Invalid calculation expression: {$column}");
+                }
+            } elseif ($is_custom_expression) {
+                if (!$this->is_valid_custom_expression($column)) {
+                    throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
+                }
+            } else {
+                if (!$this->is_valid_column_name($column)) {
+                    throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
+                }
+            }
+        }
+
+        // Process foreign keys
+        $processed_foreign_keys = [];
+        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
+        foreach ($foreign_keys_array as $fk) {
+            if (strpos($fk, '.') !== false) {
+                $parts = explode('.', $fk);
+                $key_name = end($parts);
+            } else {
+                $key_name = $fk;
+            }
+            if (!$this->is_valid_column_name($key_name)) {
+                throw new InvalidArgumentException("Invalid foreign key: {$fk}. Only alphanumeric characters and underscores are allowed.");
+            }
+            $processed_foreign_keys[] = $key_name;
+        }
+
+        // Process local keys
+        $processed_local_keys = [];
+        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
+        foreach ($local_keys_array as $lk) {
+            if (strpos($lk, '.') !== false) {
+                $parts = explode('.', $lk);
+                $key_name = end($parts);
+            } else {
+                $key_name = $lk;
+            }
+            if (!$this->is_valid_column_name($key_name)) {
+                throw new InvalidArgumentException("Invalid local key: {$lk}. Only alphanumeric characters and underscores are allowed.");
+            }
+            $processed_local_keys[] = $key_name;
+        }
+
+        // Validate key count match
+        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
+            throw new InvalidArgumentException('Number of foreign keys must match number of local keys');
+        }
+
+        // Store pending where aggregate
+        $this->pending_where_aggregates[] = [
+            'condition_type' => $condition_type,
+            'type' => $type,
+            'relation' => $relation,
+            'foreign_key' => $processed_foreign_keys,
+            'local_key' => $processed_local_keys,
+            'operator' => $operator,
+            'value' => $value,
+            'column' => $column,
+            'is_custom_expression' => $is_custom_expression,
+            'callback' => $callback
+        ];
+
+        return $this;
+    }
+
+    /**
      * Add WHERE EXISTS condition with callback
      * 
      * Example:
@@ -1013,7 +1640,7 @@ class NestedQueryBuilder
     {
         // Extract table name without alias for validation
         $table_name = $this->extract_table_name($relation);
-        
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($table_name)) {
             throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
@@ -1079,7 +1706,7 @@ class NestedQueryBuilder
     {
         // Extract table name without alias for validation
         $table_name = $this->extract_table_name($relation);
-        
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($table_name)) {
             throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
@@ -1143,7 +1770,7 @@ class NestedQueryBuilder
     {
         // Extract table name without alias for validation
         $table_name = $this->extract_table_name($relation);
-        
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($table_name)) {
             throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
@@ -1211,7 +1838,7 @@ class NestedQueryBuilder
     {
         // Extract table name without alias for validation
         $table_name = $this->extract_table_name($relation);
-        
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($table_name)) {
             throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
@@ -1256,338 +1883,6 @@ class NestedQueryBuilder
 
         return $this;
     }
-
-    /**
-     * Extract clean table name from table string (removes alias and backticks)
-     * 
-     * @param string $table_string Table string that may contain alias and backticks
-     * @return string Clean table name
-     */
-    protected function extract_table_name($table_string)
-    {
-        // Remove any alias by splitting on space and taking first part
-        $table_parts = explode(' ', trim($table_string));
-        $table_name = trim($table_parts[0]);
-
-        // Remove backticks if present
-        $table_name = trim($table_name, '`');
-
-        return $table_name;
-    }
-
-    /**
-     * Validate column name to prevent SQL injection
-     * 
-     * @param string $column_name Column name to validate
-     * @return bool True if valid, false otherwise
-     */
-    private function is_valid_column_name($column_name)
-    {
-        // Check if column name is string and not empty
-        if (!is_string($column_name) || empty($column_name)) {
-            return false;
-        }
-
-        // Allow only alphanumeric characters, underscores, and dots
-        // NO DASHES allowed to prevent SQL comment injection
-        $pattern = '/^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?$/';
-
-        if (!preg_match($pattern, $column_name)) {
-            return false;
-        }
-
-        // Check against common SQL injection patterns including dashes
-        $dangerous_patterns = [
-            '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
-            '/[\'";-]/',        // ADDED: Dash character blocked
-            '/--/',             // SQL comment pattern
-            '/\/\*/',           // Multi-line comment start
-            '/\*\//',           // Multi-line comment end
-            '/\bxp_/',          // Extended stored procedures
-            '/\bsp_/',          // Stored procedures
-            '/\|\|/',           // OR operator in some SQL dialects
-            '/&&/',             // AND operator in some SQL dialects
-            '/\s+--/',          // Space followed by comment
-            '/-{2,}/',          // Multiple dashes
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $column_name)) {
-                return false;
-            }
-        }
-
-        // Check length to prevent buffer overflow attacks
-        if (strlen($column_name) > 64) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Validate calculation expression for mathematical operations with aggregates
-     * 
-     * This method validates expressions that can contain:
-     * - Aggregate functions (SUM, AVG, COUNT, MIN, MAX)
-     * - Mathematical operations (+, -, *, /, %)
-     * - Date functions (DATEDIFF, TIMESTAMPDIFF)
-     * - Mathematical functions (ROUND, FLOOR, CEIL, ABS)
-     * - Conditional expressions (CASE WHEN)
-     * 
-     * @param string $expression Mathematical expression to validate
-     * @return bool True if valid, false otherwise
-     */
-    private function is_valid_calculation_expression($expression)
-    {
-        // Check if expression is string and not empty
-        if (!is_string($expression) || empty($expression)) {
-            return false;
-        }
-
-        // Allow more extensive pattern for calculation expressions
-        $allowed_pattern = '/^[\w\s\(\)\+\-\*\/\.,`%<>=]+$/';
-
-        if (!preg_match($allowed_pattern, $expression)) {
-            return false;
-        }
-
-        // Block dangerous SQL patterns but allow more functions for calculations
-        $dangerous_patterns = [
-            '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
-            '/[\'";]/',           // Quotes and semicolons
-            '/--/',               // SQL comments
-            '/\/\*/',             // Multi-line comment start
-            '/\*\//',             // Multi-line comment end
-            '/\|\|/',             // String concatenation
-            '/&&/',               // Logical AND
-            '/\bxp_/',            // Extended stored procedures
-            '/\bsp_/',            // Stored procedures
-            '/\bINTO\b/i',        // INTO keyword
-            '/\bVALUES\b/i',      // VALUES keyword
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $expression)) {
-                return false;
-            }
-        }
-
-        // Validate that parentheses are balanced
-        if (!$this->are_parentheses_balanced($expression)) {
-            return false;
-        }
-
-        // Check length to prevent buffer overflow
-        if (strlen($expression) > 500) {
-            return false;
-        }
-
-        // Validate tokens - allow aggregate functions and mathematical operations
-        $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
-        foreach ($tokens as $token) {
-            // Skip numeric values
-            if (is_numeric($token)) {
-                continue;
-            }
-
-            // Allow aggregate functions
-            $allowed_aggregates = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
-            if (in_array(strtoupper($token), $allowed_aggregates)) {
-                continue;
-            }
-
-            // Allow date functions
-            $allowed_date_functions = ['DATEDIFF', 'TIMESTAMPDIFF', 'DATE', 'NOW', 'CURDATE', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND'];
-            if (in_array(strtoupper($token), $allowed_date_functions)) {
-                continue;
-            }
-
-            // Allow mathematical functions
-            $allowed_math_functions = ['ROUND', 'FLOOR', 'CEIL', 'ABS', 'POW', 'SQRT', 'MOD'];
-            if (in_array(strtoupper($token), $allowed_math_functions)) {
-                continue;
-            }
-
-            // Allow conditional functions
-            $allowed_conditional = ['CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'IF', 'IFNULL', 'COALESCE', 'NULLIF'];
-            if (in_array(strtoupper($token), $allowed_conditional)) {
-                continue;
-            }
-
-            // Allow comparison operators
-            $allowed_operators = ['AND', 'OR', 'NOT', 'IS', 'NULL', 'TRUE', 'FALSE'];
-            if (in_array(strtoupper($token), $allowed_operators)) {
-                continue;
-            }
-
-            // Check if it's a valid column name (also allows table.column format)
-            if (!$this->is_valid_column_name($token)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Validate table name to prevent SQL injection
-     * 
-     * @param string $table_name Table name to validate
-     * @return bool True if valid, false otherwise
-     */
-    private function is_valid_table_name($table_name)
-    {
-        // Check if table name is string and not empty
-        if (!is_string($table_name) || empty($table_name)) {
-            return false;
-        }
-
-        // Allow only alphanumeric characters and underscores
-        // NO DASHES allowed to prevent SQL comment injection
-        $pattern = '/^[a-zA-Z_][a-zA-Z0-9_]*$/';
-
-        if (!preg_match($pattern, $table_name)) {
-            return false;
-        }
-
-        // Check against common SQL injection patterns including dashes
-        $dangerous_patterns = [
-            '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
-            '/[\'";-]/',        // ADDED: Dash character blocked
-            '/--/',             // SQL comment pattern
-            '/\/\*/',           // Multi-line comment start
-            '/\*\//',           // Multi-line comment end
-            '/\s+--/',          // Space followed by comment
-            '/-{2,}/',          // Multiple dashes
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $table_name)) {
-                return false;
-            }
-        }
-
-        // Check length to prevent buffer overflow attacks
-        if (strlen($table_name) > 64) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Validate custom SQL expression for aggregation functions
-     * 
-     * @param string $expression Custom SQL expression to validate
-     * @return bool True if valid, false otherwise
-     */
-    private function is_valid_custom_expression($expression)
-    {
-        // Check if expression is string and not empty
-        if (!is_string($expression) || empty($expression)) {
-            return false;
-        }
-
-        // Allow mathematical operations, column names, parentheses, comparison operators, and common SQL functions
-        $allowed_pattern = '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/';
-
-        if (!preg_match($allowed_pattern, $expression)) {
-            return false;
-        }
-
-        // Block dangerous SQL patterns (but allow CASE/WHEN/THEN/ELSE/END and AND/OR for conditional expressions)
-        $dangerous_patterns = [
-            '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
-            '/[\'";]/',           // Quotes and semicolons
-            '/--/',               // SQL comments
-            '/\/\*/',             // Multi-line comment start
-            '/\*\//',             // Multi-line comment end
-            '/\|\|/',             // String concatenation operator
-            '/&&/',               // Logical AND operator
-            '/\bxp_/',            // Extended stored procedures
-            '/\bsp_/',            // Stored procedures
-            '/\bSELECT\b/i',      // Nested SELECT
-            '/\bFROM\b/i',        // FROM keyword
-            '/\bJOIN\b/i',        // JOIN keyword
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $expression)) {
-                return false;
-            }
-        }
-
-        // Validate that parentheses are balanced
-        if (!$this->are_parentheses_balanced($expression)) {
-            return false;
-        }
-
-        // Check length to prevent buffer overflow
-        if (strlen($expression) > 500) {
-            return false;
-        }
-
-        // Validate that expression contains only allowed column names and operators
-        $tokens = preg_split('/[\s\(\)\+\-\*\/,<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
-        foreach ($tokens as $token) {
-            // Skip numeric values
-            if (is_numeric($token)) {
-                continue;
-            }
-
-            // Skip common SQL functions and conditional keywords
-            $allowed_functions = [
-                'COALESCE', 'IFNULL', 'IF', 'NULLIF',
-                'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
-                'SUM', 'AVG', 'COUNT', 'MIN', 'MAX',
-                'ROUND', 'FLOOR', 'CEIL', 'ABS',
-                'CONCAT', 'SUBSTRING', 'LENGTH',
-                'DATE', 'NOW', 'CURDATE', 'CURTIME',
-                'YEAR', 'MONTH', 'DAY',
-                'AND', 'OR', 'NOT', 'IS', 'NULL',
-                'AS', 'DISTINCT'
-            ];
-            if (in_array(strtoupper($token), $allowed_functions)) {
-                continue;
-            }
-
-            // Check if it's a valid column name (including backtick-wrapped names)
-            $cleaned_token = str_replace('`', '', $token);
-            if (!$this->is_valid_column_name($cleaned_token)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Check if parentheses are balanced in expression
-     * 
-     * @param string $expression Expression to check
-     * @return bool True if balanced, false otherwise
-     */
-    private function are_parentheses_balanced($expression)
-    {
-        $count = 0;
-        $length = strlen($expression);
-
-        for ($i = 0; $i < $length; $i++) {
-            if ($expression[$i] === '(') {
-                $count++;
-            } elseif ($expression[$i] === ')') {
-                $count--;
-                // If we have more closing than opening, it's unbalanced
-                if ($count < 0) {
-                    return false;
-                }
-            }
-        }
-
-        // Should be zero if balanced
-        return $count === 0;
-    }
 }
 
 /**
@@ -1608,6 +1903,7 @@ class NestedQueryBuilder
  */
 class CustomQueryBuilder extends CI_DB_query_builder
 {
+    use QueryValidationTrait;
     /**
      * @var array Array of with relations for eager loading
      */
@@ -1627,6 +1923,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @var array Array of pending aggregate functions
      */
     protected $pending_aggregates = [];
+
+    /**
+     * @var array Array of pending WHERE aggregate conditions
+     */
+    protected $pending_where_aggregates = [];
 
     /**
      * @var bool Debug mode flag
@@ -1694,10 +1995,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         // Remove backticks first
         $cleaned = str_replace('`', '', trim($table_string));
-        
+
         // Split by space to separate table name and alias
         $parts = preg_split('/\s+/', $cleaned);
-        
+
         // If there are multiple parts, check for AS keyword
         if (count($parts) >= 2) {
             // If AS keyword exists, return the part after AS
@@ -1708,7 +2009,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // Otherwise return the last part (assumed to be alias)
             return $parts[count($parts) - 1];
         }
-        
+
         // No alias found, return the table name itself
         return $parts[0];
     }
@@ -2275,7 +2576,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         // Extract table name without alias for validation
         $table_name = $this->extract_table_name($relation);
-        
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($table_name)) {
             throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
@@ -2337,11 +2638,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @return $this
      * @throws InvalidArgumentException
      */
-    public function or_where_exists_relation($relation, $foreignKey, $localKey, $callback = null, $is_datatable_search = false)
+    public function or_where_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
     {
         // Extract table name without alias for validation
         $table_name = $this->extract_table_name($relation);
-        
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($table_name)) {
             throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
@@ -2376,29 +2677,29 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Check if we're inside a group context by checking _group_depth
         // If in group, execute immediately; otherwise store as pending
-        if ($is_datatable_search) {
-            $extract_table_or_alias = function($table_string) {
+        if ($disable_pending_process) {
+            $extract_table_or_alias = function ($table_string) {
                 return $this->extract_table_or_alias($table_string);
             };
-            
-            return $this->or_where_exists(function($sub) use ($relation, $processed_foreign_keys, $processed_local_keys, $callback, $extract_table_or_alias) {
+
+            return $this->or_where_exists(function ($sub) use ($relation, $processed_foreign_keys, $processed_local_keys, $callback, $extract_table_or_alias) {
                 $sub->select('1')
                     ->from($relation);
-                
+
                 // Build join conditions
                 for ($i = 0; $i < count($processed_foreign_keys); $i++) {
                     $fk = $processed_foreign_keys[$i];
                     $lk = $processed_local_keys[$i];
-                    
+
                     // Extract alias from relation for WHERE condition
                     $relation_alias = $extract_table_or_alias($relation);
-                    
+
                     // Handle parent table reference
                     $parent_ref = $lk;
-                    
+
                     $sub->where("{$relation_alias}.{$fk} = {$parent_ref}", null, false);
                 }
-                
+
                 // Execute callback if provided
                 if ($callback && is_callable($callback)) $callback($sub);
             });
@@ -2435,7 +2736,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         // Extract table name without alias for validation
         $table_name = $this->extract_table_name($relation);
-        
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($table_name)) {
             throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
@@ -2499,11 +2800,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @return $this
      * @throws InvalidArgumentException
      */
-    public function or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null, $is_datatable_search = false)
+    public function or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
     {
         // Extract table name without alias for validation
         $table_name = $this->extract_table_name($relation);
-        
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($table_name)) {
             throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
@@ -2535,32 +2836,32 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if (count($processed_foreign_keys) !== count($processed_local_keys)) {
             throw new InvalidArgumentException('Foreign keys and local keys count must match');
         }
-        
+
         // Check if we're inside a group context by checking _group_depth
         // If in group, execute immediately; otherwise store as pending
-        if ($is_datatable_search) {
-            $extract_table_or_alias = function($table_string) {
+        if ($disable_pending_process) {
+            $extract_table_or_alias = function ($table_string) {
                 return $this->extract_table_or_alias($table_string);
             };
-            
-            return $this->or_where_not_exists(function($sub) use ($relation, $processed_foreign_keys, $processed_local_keys, $callback, $extract_table_or_alias) {
+
+            return $this->or_where_not_exists(function ($sub) use ($relation, $processed_foreign_keys, $processed_local_keys, $callback, $extract_table_or_alias) {
                 $sub->select('1')
                     ->from($relation);
-                
+
                 // Build join conditions
                 for ($i = 0; $i < count($processed_foreign_keys); $i++) {
                     $fk = $processed_foreign_keys[$i];
                     $lk = $processed_local_keys[$i];
-                    
+
                     // Extract alias from relation for WHERE condition
                     $relation_alias = $extract_table_or_alias($relation);
-                    
+
                     // Handle parent table reference
                     $parent_ref = $lk;
-                    
+
                     $sub->where("{$relation_alias}.{$fk} = {$parent_ref}", null, false);
                 }
-                
+
                 // Execute callback if provided
                 if ($callback && is_callable($callback)) $callback($sub);
             });
@@ -3675,6 +3976,242 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Add WHERE condition based on calculated field alias (simplified syntax)
+     *
+     * This method provides a simplified way to filter by aggregate fields that were
+     * added using with_calculation(), with_sum(), with_avg(), with_min(), or with_max().
+     * It automatically references the aggregate subquery in the WHERE clause.
+     *
+     * IMPORTANT: You must call with_calculation() or with_sum()/with_avg()/etc. BEFORE
+     * calling where_aggregate() so the alias is registered.
+     *
+     * Example:
+     * // Filter by calculated field
+     * $this->db->with_calculation(['transaction_detail' => 'sales_price'], 'idtransaction', 'idtransaction', 'SUM(price)')
+     *          ->where_aggregate('sales_price >', 10000)
+     *          ->get('transaction');
+     *
+     * // Filter by sum aggregate
+     * $this->db->with_sum(['orders' => 'total_spent'], 'user_id', 'id', 'amount')
+     *          ->where_aggregate('total_spent >=', 5000)
+     *          ->get('users');
+     *
+     * // Multiple conditions
+     * $this->db->with_avg(['reviews' => 'avg_rating'], 'product_id', 'id', 'rating')
+     *          ->where_aggregate('avg_rating >', 4.5)
+     *          ->where_aggregate('avg_rating <', 5.0)
+     *          ->get('products');
+     *
+     * // With OR condition
+     * $this->db->with_sum(['orders' => 'total_amount'], 'user_id', 'id', 'amount')
+     *          ->where_aggregate('total_amount >', 10000)
+     *          ->or_where_aggregate('total_amount =', 0)
+     *          ->get('users');
+     *
+     * @param string $condition Condition string in format "alias operator" (e.g., "sales_price >", "total_count >=")
+     * @param mixed $value Value to compare against
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function where_aggregate($condition, $value)
+    {
+        return $this->add_where_calculated('AND', $condition, $value);
+    }
+
+    /**
+     * Add OR WHERE condition based on calculated field alias (simplified syntax)
+     *
+     * Example:
+     * $this->db->with_sum(['orders' => 'total_amount'], 'user_id', 'id', 'amount')
+     *          ->where_aggregate('total_amount >', 5000)
+     *          ->or_where_aggregate('total_amount =', 0)
+     *          ->get('users');
+     *
+     * @param string $condition Condition string in format "alias operator"
+     * @param mixed $value Value to compare against
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function or_where_aggregate($condition, $value)
+    {
+        return $this->add_where_calculated('OR', $condition, $value);
+    }
+
+    /**
+     * Internal method to add WHERE condition for calculated fields
+     *
+     * @param string $condition_type 'AND' or 'OR'
+     * @param string $condition Condition string with alias and operator
+     * @param mixed $value Value to compare against
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_where_calculated($condition_type, $condition, $value)
+    {
+        // Parse condition string to extract alias and operator
+        $pattern = '/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|>|<|>=|<=|!=|<>)\s*$/';
+        if (!preg_match($pattern, trim($condition), $matches)) {
+            throw new InvalidArgumentException("Invalid condition format: '{$condition}'. Expected format: 'alias operator' (e.g., 'sales_price >', 'total_count >=')");
+        }
+
+        $alias = $matches[1];
+        $operator = $matches[2];
+
+        // Find the aggregate configuration by alias
+        $aggregate_config = null;
+        foreach ($this->pending_aggregates as $config) {
+            if ($config['alias'] === $alias) {
+                $aggregate_config = $config;
+                break;
+            }
+        }
+
+        if ($aggregate_config === null) {
+            throw new InvalidArgumentException("Alias '{$alias}' not found. You must call with_calculation(), with_sum(), with_avg(), with_min(), or with_max() with this alias before using where_calculated().");
+        }
+
+        // Map aggregate type from pending_aggregates to where_aggregate type
+        $type_mapping = [
+            'count' => 'count',
+            'sum' => 'sum',
+            'avg' => 'avg',
+            'min' => 'min',
+            'max' => 'max',
+            'custom_calculation' => 'custom'
+        ];
+
+        $aggregate_type = isset($type_mapping[$aggregate_config['type']])
+            ? $type_mapping[$aggregate_config['type']]
+            : 'custom';
+
+        // Use the aggregate configuration to build where_aggregate
+        return $this->add_where_aggregate(
+            $condition_type,
+            $aggregate_type,
+            $aggregate_config['relation'],
+            $aggregate_config['foreign_key'],
+            $aggregate_config['local_key'],
+            $operator,
+            $value,
+            $aggregate_config['column'],
+            $aggregate_config['is_custom_expression'],
+            $aggregate_config['callback']
+        );
+    }
+
+    /**
+     * Internal method to add WHERE aggregate condition
+     *
+     * @param string $condition_type 'AND' or 'OR'
+     * @param string $type Aggregate type
+     * @param string $relation Related table name
+     * @param string|array $foreignKey Foreign key(s)
+     * @param string|array $localKey Local key(s)
+     * @param string $operator Comparison operator
+     * @param mixed $value Value to compare against
+     * @param string|null $column Column name or expression
+     * @param bool $is_custom_expression Whether column is custom expression
+     * @param callable|null $callback Optional callback
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_where_aggregate($condition_type, $type, $relation, $foreignKey, $localKey, $operator, $value, $column = null, $is_custom_expression = false, $callback = null)
+    {
+        // Validate aggregate type
+        $allowed_types = ['count', 'sum', 'avg', 'min', 'max', 'custom'];
+        $type = strtolower($type);
+        if (!in_array($type, $allowed_types)) {
+            throw new InvalidArgumentException("Invalid aggregate type: {$type}. Allowed types: " . implode(', ', $allowed_types));
+        }
+
+        // Validate operator
+        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+        if (!in_array($operator, $allowed_operators)) {
+            throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
+        }
+
+        // Validate column for non-count types
+        if ($type !== 'count' && empty($column)) {
+            throw new InvalidArgumentException("Column is required for aggregate type: {$type}");
+        }
+
+        // Validate is_custom_expression is boolean
+        if (!is_bool($is_custom_expression)) {
+            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
+        }
+
+        // Validate column/expression
+        if ($column !== null) {
+            if ($type === 'custom') {
+                if (!$this->is_valid_calculation_expression($column)) {
+                    throw new InvalidArgumentException("Invalid calculation expression: {$column}");
+                }
+            } elseif ($is_custom_expression) {
+                if (!$this->is_valid_custom_expression($column)) {
+                    throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
+                }
+            } else {
+                if (!$this->is_valid_column_name($column)) {
+                    throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
+                }
+            }
+        }
+
+        // Process foreign keys
+        $processed_foreign_keys = [];
+        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
+        foreach ($foreign_keys_array as $fk) {
+            if (strpos($fk, '.') !== false) {
+                $parts = explode('.', $fk);
+                $key_name = end($parts);
+            } else {
+                $key_name = $fk;
+            }
+            if (!$this->is_valid_column_name($key_name)) {
+                throw new InvalidArgumentException("Invalid foreign key: {$fk}. Only alphanumeric characters and underscores are allowed.");
+            }
+            $processed_foreign_keys[] = $key_name;
+        }
+
+        // Process local keys
+        $processed_local_keys = [];
+        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
+        foreach ($local_keys_array as $lk) {
+            if (strpos($lk, '.') !== false) {
+                $parts = explode('.', $lk);
+                $key_name = end($parts);
+            } else {
+                $key_name = $lk;
+            }
+            if (!$this->is_valid_column_name($key_name)) {
+                throw new InvalidArgumentException("Invalid local key: {$lk}. Only alphanumeric characters and underscores are allowed.");
+            }
+            $processed_local_keys[] = $key_name;
+        }
+
+        // Validate key count match
+        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
+            throw new InvalidArgumentException('Number of foreign keys must match number of local keys');
+        }
+
+        // Store pending where aggregate
+        $this->pending_where_aggregates[] = [
+            'condition_type' => $condition_type,
+            'type' => $type,
+            'relation' => $relation,
+            'foreign_key' => $processed_foreign_keys,
+            'local_key' => $processed_local_keys,
+            'operator' => $operator,
+            'value' => $value,
+            'column' => $column,
+            'is_custom_expression' => $is_custom_expression,
+            'callback' => $callback
+        ];
+
+        return $this;
+    }
+
+    /**
      * Pluck a single column's values from the result set as a flat array.
      * Supports relation columns using dot notation (e.g. 'profile.name').
      *
@@ -3738,6 +4275,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $parent_table = !empty($table) ? $table : $this->_temp_table_name;
         if (!empty($parent_table)) {
             $this->process_pending_where_exists($parent_table);
+            $this->process_pending_where_aggregates($parent_table);
         }
 
         if (!empty($this->with_relations)) return $this->get_with_eager_loading('', $limit, $offset, null);
@@ -4395,7 +4933,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
             $table_name = $this->extract_table_name($aggregate_config['relation']);
             $relation_table_name = $this->extract_table_or_alias($aggregate_config['relation']);
-            
+
             // Generate subquery alias to avoid ambiguity in self-joins
             // Format: tablename_sub (e.g., transaction_detail_sub)
             $subquery_alias = $relation_table_name;
@@ -4412,7 +4950,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         // Replace column references in custom expression with subquery alias
                         $expression = $aggregate_config['column'];
                         // Add subquery alias prefix to column names in expression
-                        $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function($matches) use ($subquery_alias) {
+                        $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function ($matches) use ($subquery_alias) {
                             // Skip SQL keywords and functions
                             $keywords = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT'];
                             if (in_array(strtoupper($matches[1]), $keywords)) {
@@ -4501,13 +5039,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
             if (is_callable($aggregate_config['callback'])) {
                 // Store original FROM to restore later
                 $original_from = $subquery->qb_from;
-                
+
                 // Temporarily replace FROM with aliased version for callback processing
                 // This ensures WHERE conditions in callback use the subquery alias
                 $subquery->qb_from = [$subquery_alias];
-                
+
                 $aggregate_config['callback']($subquery);
-                
+
                 // Restore original FROM (which already includes alias)
                 $subquery->qb_from = $original_from;
 
@@ -4536,6 +5074,179 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         // pending_aggregates already cleared at the beginning to prevent recursion
+    }
+
+    /**
+     * Process pending WHERE aggregate conditions by building subqueries in WHERE clause
+     *
+     * @param string|null $context_table Optional context table to use instead of main table
+     * @return void
+     * @throws Exception
+     */
+    protected function process_pending_where_aggregates($context_table = null)
+    {
+        if (empty($this->pending_where_aggregates)) return;
+
+        if (empty($this->qb_from)) {
+            throw new Exception('WHERE aggregate conditions require a table to be set. Please call from() method or provide table in get() method.');
+        }
+
+        // Store pending operations and clear them to prevent infinite recursion
+        $pending_operations = $this->pending_where_aggregates;
+        $this->pending_where_aggregates = [];
+
+        // Use context_table if provided, otherwise use qb_from
+        $mainTable = $context_table ? $context_table : $this->qb_from[0];
+
+        // Extract table name and alias from FROM clause
+        $main_table_name = '';
+        $main_table_alias = '';
+
+        if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $mainTable, $matches)) {
+            $main_table_name = $matches[1];
+            $main_table_alias = isset($matches[2]) ? $matches[2] : $main_table_name;
+        } else {
+            $main_table_name = $mainTable;
+            $main_table_alias = $mainTable;
+        }
+
+        foreach ($pending_operations as $aggregate_config) {
+            $subquery = clone $this;
+            $subquery->reset_query();
+
+            $table_name = $this->extract_table_name($aggregate_config['relation']);
+            $relation_table_name = $this->extract_table_or_alias($aggregate_config['relation']);
+
+            // Generate subquery alias to avoid ambiguity
+            $subquery_alias = $relation_table_name . '_agg';
+
+            // Build aggregate function based on type
+            $aggregate_function = '';
+
+            switch ($aggregate_config['type']) {
+                case 'count':
+                    $aggregate_function = 'COUNT(*)';
+                    break;
+                case 'sum':
+                    if ($aggregate_config['is_custom_expression']) {
+                        $expression = $aggregate_config['column'];
+                        // Add subquery alias prefix to column names in expression
+                        $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function ($matches) use ($subquery_alias) {
+                            $keywords = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT'];
+                            if (in_array(strtoupper($matches[1]), $keywords)) {
+                                return $matches[1];
+                            }
+                            if (strpos($matches[0], '.') !== false) {
+                                return $matches[0];
+                            }
+                            return "`{$subquery_alias}`.`{$matches[1]}`";
+                        }, $expression);
+                        $aggregate_function = "SUM({$expression})";
+                    } else {
+                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $aggregate_function = "SUM($column)";
+                    }
+                    break;
+                case 'avg':
+                    if ($aggregate_config['is_custom_expression']) {
+                        $expression = $aggregate_config['column'];
+                        $aggregate_function = "AVG({$expression})";
+                    } else {
+                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $aggregate_function = "AVG($column)";
+                    }
+                    break;
+                case 'max':
+                    if ($aggregate_config['is_custom_expression']) {
+                        $expression = $aggregate_config['column'];
+                        $aggregate_function = "MAX({$expression})";
+                    } else {
+                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $aggregate_function = "MAX($column)";
+                    }
+                    break;
+                case 'min':
+                    if ($aggregate_config['is_custom_expression']) {
+                        $expression = $aggregate_config['column'];
+                        $aggregate_function = "MIN({$expression})";
+                    } else {
+                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $aggregate_function = "MIN($column)";
+                    }
+                    break;
+                case 'custom':
+                    $aggregate_function = $aggregate_config['column'];
+                    break;
+            }
+
+            // Use table alias in FROM clause for subquery
+            $subquery->select($aggregate_function)
+                ->from($table_name . ' ' . $subquery_alias);
+
+            $foreign_keys = $aggregate_config['foreign_key'];
+            $local_keys = $aggregate_config['local_key'];
+
+            for ($i = 0; $i < count($foreign_keys); $i++) {
+                // Check if foreign key already has table reference
+                if (strpos($foreign_keys[$i], '.') !== false) {
+                    $foreign_key_with_table = $foreign_keys[$i];
+                } else {
+                    $foreign_key_with_table = $subquery_alias . '.' . $foreign_keys[$i];
+                }
+
+                // Check if local key already has table reference
+                if (strpos($local_keys[$i], '.') !== false) {
+                    $local_key_with_table = $local_keys[$i];
+                } else {
+                    $local_key_with_table = $main_table_alias . '.' . $local_keys[$i];
+                }
+
+                $foreign_key_safe = $this->protect_identifiers($foreign_key_with_table, true);
+                $local_key_safe = $this->protect_identifiers($local_key_with_table, true);
+
+                $subquery->where("{$foreign_key_safe} = {$local_key_safe}", null, false);
+            }
+
+            // Execute callback if provided
+            if (is_callable($aggregate_config['callback'])) {
+                // Store original FROM to restore later
+                $original_from = $subquery->qb_from;
+
+                // Temporarily replace FROM with aliased version for callback processing
+                $subquery->qb_from = [$subquery_alias];
+
+                $aggregate_config['callback']($subquery);
+
+                // Restore original FROM
+                $subquery->qb_from = $original_from;
+
+                // Process any pending operations in subquery recursively
+                if (!empty($subquery->pending_where_exists)) {
+                    $subquery->process_pending_where_exists($subquery_alias);
+                }
+                if (!empty($subquery->pending_where_has)) {
+                    $subquery->process_pending_where_has();
+                }
+                if (!empty($subquery->pending_aggregates)) {
+                    $subquery->process_pending_aggregates($subquery_alias);
+                }
+            }
+
+            // Build the WHERE condition with subquery
+            $compiled_subquery = $subquery->get_compiled_select();
+            $operator = $aggregate_config['operator'];
+            $value = $this->escape($aggregate_config['value']);
+
+            // Use COALESCE to handle NULL results (when no matching rows)
+            $where_condition = "COALESCE(({$compiled_subquery}), 0) {$operator} {$value}";
+
+            // Add to WHERE clause based on condition type
+            if ($aggregate_config['condition_type'] === 'OR') {
+                $this->or_where($where_condition, null, false);
+            } else {
+                $this->where($where_condition, null, false);
+            }
+        }
     }
 
     /**
@@ -4589,10 +5300,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
             // Select 1 for EXISTS
             $subquery->select('1');
-            
+
             // Extract table name and alias from relation (supports "table_name alias" format)
             $relation_identifier = $this->extract_table_or_alias($exists_config['relation']);
-            
+
             // Use the relation string as is for FROM clause (may contain alias)
             $subquery->from($exists_config['relation']);
 
@@ -4603,7 +5314,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             for ($i = 0; $i < count($foreign_keys); $i++) {
                 // Use relation identifier (alias if present, otherwise table name) for foreign key
                 $foreign_key_with_table = $relation_identifier . '.' . $foreign_keys[$i];
-                
+
                 // Check if local key already has table reference (contains a dot)
                 if (strpos($local_keys[$i], '.') !== false) {
                     // Local key already has table reference (e.g., 'msd.iditem'), use as is
@@ -4779,318 +5490,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $this->select("{$table_name}.{$column_name} AS {$alias_name}", false);
             }
         }
-    }
-
-    /**
-     * Validate column name to prevent SQL injection
-     * 
-     * @param string $column_name Column name to validate
-     * @return bool True if valid, false otherwise
-     */
-    private function is_valid_column_name($column_name)
-    {
-        // Check if column name is string and not empty
-        if (!is_string($column_name) || empty($column_name)) {
-            return false;
-        }
-
-        // Allow only alphanumeric characters, underscores, and dots
-        // NO DASHES allowed to prevent SQL comment injection
-        $pattern = '/^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?$/';
-
-        if (!preg_match($pattern, $column_name)) {
-            return false;
-        }
-
-        // Check against common SQL injection patterns including dashes
-        $dangerous_patterns = [
-            '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
-            '/[\'";-]/',        // ADDED: Dash character blocked
-            '/--/',             // SQL comment pattern
-            '/\/\*/',           // Multi-line comment start
-            '/\*\//',           // Multi-line comment end
-            '/\bxp_/',          // Extended stored procedures
-            '/\bsp_/',          // Stored procedures
-            '/\|\|/',           // OR operator in some SQL dialects
-            '/&&/',             // AND operator in some SQL dialects
-            '/\s+--/',          // Space followed by comment
-            '/-{2,}/',          // Multiple dashes
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $column_name)) {
-                return false;
-            }
-        }
-
-        // Check length to prevent buffer overflow attacks
-        if (strlen($column_name) > 64) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Validate table name to prevent SQL injection
-     * 
-     * @param string $table_name Table name to validate
-     * @return bool True if valid, false otherwise
-     */
-    private function is_valid_table_name($table_name)
-    {
-        // Check if table name is string and not empty
-        if (!is_string($table_name) || empty($table_name)) {
-            return false;
-        }
-
-        // Allow only alphanumeric characters and underscores
-        // NO DASHES allowed to prevent SQL comment injection
-        $pattern = '/^[a-zA-Z_][a-zA-Z0-9_]*$/';
-
-        if (!preg_match($pattern, $table_name)) {
-            return false;
-        }
-
-        // Check against common SQL injection patterns including dashes
-        $dangerous_patterns = [
-            '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
-            '/[\'";-]/',        // ADDED: Dash character blocked
-            '/--/',             // SQL comment pattern
-            '/\/\*/',           // Multi-line comment start
-            '/\*\//',           // Multi-line comment end
-            '/\s+--/',          // Space followed by comment
-            '/-{2,}/',          // Multiple dashes
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $table_name)) {
-                return false;
-            }
-        }
-
-        // Check length to prevent buffer overflow attacks
-        if (strlen($table_name) > 64) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Validate custom SQL expression for aggregation functions
-     * 
-     * @param string $expression Custom SQL expression to validate
-     * @return bool True if valid, false otherwise
-     */
-    private function is_valid_custom_expression($expression)
-    {
-        // Check if expression is string and not empty
-        if (!is_string($expression) || empty($expression)) {
-            return false;
-        }
-
-        // Allow mathematical operations, column names, parentheses, comparison operators, and common SQL functions
-        $allowed_pattern = '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/';
-
-        if (!preg_match($allowed_pattern, $expression)) {
-            return false;
-        }
-
-        // Block dangerous SQL patterns (but allow CASE/WHEN/THEN/ELSE/END and AND/OR for conditional expressions)
-        $dangerous_patterns = [
-            '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
-            '/[\'";]/',           // Quotes and semicolons
-            '/--/',               // SQL comments
-            '/\/\*/',             // Multi-line comment start
-            '/\*\//',             // Multi-line comment end
-            '/\|\|/',             // String concatenation operator
-            '/&&/',               // Logical AND operator
-            '/\bxp_/',            // Extended stored procedures
-            '/\bsp_/',            // Stored procedures
-            '/\bSELECT\b/i',      // Nested SELECT
-            '/\bFROM\b/i',        // FROM keyword
-            '/\bJOIN\b/i',        // JOIN keyword
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $expression)) {
-                return false;
-            }
-        }
-
-        // Validate that parentheses are balanced
-        if (!$this->are_parentheses_balanced($expression)) {
-            return false;
-        }
-
-        // Check length to prevent buffer overflow
-        if (strlen($expression) > 500) {
-            return false;
-        }
-
-        // Validate that expression contains only allowed column names and operators
-        $tokens = preg_split('/[\s\(\)\+\-\*\/,<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
-        foreach ($tokens as $token) {
-            // Skip numeric values
-            if (is_numeric($token)) {
-                continue;
-            }
-
-            // Skip common SQL functions and conditional keywords
-            $allowed_functions = [
-                'COALESCE', 'IFNULL', 'IF', 'NULLIF',
-                'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
-                'SUM', 'AVG', 'COUNT', 'MIN', 'MAX',
-                'ROUND', 'FLOOR', 'CEIL', 'ABS',
-                'CONCAT', 'SUBSTRING', 'LENGTH',
-                'DATE', 'NOW', 'CURDATE', 'CURTIME',
-                'YEAR', 'MONTH', 'DAY',
-                'AND', 'OR', 'NOT', 'IS', 'NULL',
-                'AS', 'DISTINCT'
-            ];
-            if (in_array(strtoupper($token), $allowed_functions)) {
-                continue;
-            }
-
-            // Check if it's a valid column name (including backtick-wrapped names)
-            $cleaned_token = str_replace('`', '', $token);
-            if (!$this->is_valid_column_name($cleaned_token)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Check if parentheses are balanced in expression
-     * 
-     * @param string $expression Expression to check
-     * @return bool True if balanced, false otherwise
-     */
-    private function are_parentheses_balanced($expression)
-    {
-        $count = 0;
-        $chars = str_split($expression);
-
-        foreach ($chars as $char) {
-            if ($char === '(') {
-                $count++;
-            } elseif ($char === ')') {
-                $count--;
-                if ($count < 0) {
-                    return false; // More closing than opening
-                }
-            }
-        }
-
-        return $count === 0; // Should be balanced
-    }
-
-    /**
-     * Validate calculation expression for mathematical operations with aggregates
-     * 
-     * This method validates expressions that can contain:
-     * - Aggregate functions (SUM, AVG, COUNT, MIN, MAX)
-     * - Mathematical operations (+, -, *, /, %)
-     * - Date functions (DATEDIFF, TIMESTAMPDIFF)
-     * - Mathematical functions (ROUND, FLOOR, CEIL, ABS)
-     * - Conditional expressions (CASE WHEN)
-     * 
-     * @param string $expression Mathematical expression to validate
-     * @return bool True if valid, false otherwise
-     */
-    private function is_valid_calculation_expression($expression)
-    {
-        // Check if expression is string and not empty
-        if (!is_string($expression) || empty($expression)) {
-            return false;
-        }
-
-        // Allow more extensive pattern for calculation expressions
-        $allowed_pattern = '/^[\w\s\(\)\+\-\*\/\.,`%<>=]+$/';
-
-        if (!preg_match($allowed_pattern, $expression)) {
-            return false;
-        }
-
-        // Block dangerous SQL patterns but allow more functions for calculations
-        $dangerous_patterns = [
-            '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
-            '/[\'";]/',           // Quotes and semicolons
-            '/--/',               // SQL comments
-            '/\/\*/',             // Multi-line comment start
-            '/\*\//',             // Multi-line comment end
-            '/\|\|/',             // String concatenation
-            '/&&/',               // Logical AND
-            '/\bxp_/',            // Extended stored procedures
-            '/\bsp_/',            // Stored procedures
-            '/\bINTO\b/i',        // INTO keyword
-            '/\bVALUES\b/i',      // VALUES keyword
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $expression)) {
-                return false;
-            }
-        }
-
-        // Validate that parentheses are balanced
-        if (!$this->are_parentheses_balanced($expression)) {
-            return false;
-        }
-
-        // Check length to prevent buffer overflow
-        if (strlen($expression) > 500) {
-            return false;
-        }
-
-        // Validate tokens - allow aggregate functions and mathematical operations
-        $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
-        foreach ($tokens as $token) {
-            // Skip numeric values
-            if (is_numeric($token)) {
-                continue;
-            }
-
-            // Allow aggregate functions
-            $allowed_aggregates = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
-            if (in_array(strtoupper($token), $allowed_aggregates)) {
-                continue;
-            }
-
-            // Allow date functions
-            $allowed_date_functions = ['DATEDIFF', 'TIMESTAMPDIFF', 'DATE', 'NOW', 'CURDATE', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND'];
-            if (in_array(strtoupper($token), $allowed_date_functions)) {
-                continue;
-            }
-
-            // Allow mathematical functions
-            $allowed_math_functions = ['ROUND', 'FLOOR', 'CEIL', 'ABS', 'POW', 'SQRT', 'MOD'];
-            if (in_array(strtoupper($token), $allowed_math_functions)) {
-                continue;
-            }
-
-            // Allow conditional functions
-            $allowed_conditional = ['CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'IF', 'IFNULL', 'COALESCE', 'NULLIF'];
-            if (in_array(strtoupper($token), $allowed_conditional)) {
-                continue;
-            }
-
-            // Allow comparison operators
-            $allowed_operators = ['AND', 'OR', 'NOT', 'IS', 'NULL', 'TRUE', 'FALSE'];
-            if (in_array(strtoupper($token), $allowed_operators)) {
-                continue;
-            }
-
-            // Check if it's a valid column name (also allows table.column format)
-            if (!$this->is_valid_column_name($token)) {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     /**
@@ -5289,7 +5688,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                                 // Replace column references in custom expression with subquery alias
                                 $expression = $aggregate_config['column'];
                                 // Add subquery alias prefix to column names in expression
-                                $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function($matches) use ($subquery_alias) {
+                                $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function ($matches) use ($subquery_alias) {
                                     // Skip SQL keywords and functions
                                     $keywords = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT'];
                                     if (in_array(strtoupper($matches[1]), $keywords)) {
@@ -5347,7 +5746,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         // Check if foreign/local keys already have table prefix
                         $has_fk_prefix = strpos($aggregate_foreign_keys[$i], '.') !== false;
                         $has_lk_prefix = strpos($aggregate_local_keys[$i], '.') !== false;
-                        
+
                         if ($has_fk_prefix) {
                             // Foreign key already has prefix, use as is (but we won't use it with alias)
                             $aggregate_foreign_key_with_table = $aggregate_foreign_keys[$i];
@@ -5355,7 +5754,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                             // Use subquery alias instead of relation name for foreign key
                             $aggregate_foreign_key_with_table = $subquery_alias . '.' . $aggregate_foreign_keys[$i];
                         }
-                        
+
                         if ($has_lk_prefix) {
                             // Local key already has prefix, use as is
                             $aggregate_local_key_with_table = $aggregate_local_keys[$i];
@@ -5363,7 +5762,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                             // Add parent relation table prefix (not aggregate relation)
                             $aggregate_local_key_with_table = $config['relation'] . '.' . $aggregate_local_keys[$i];
                         }
-                        
+
                         $aggregate_foreign_key_safe = $relation_builder->db->protect_identifiers($aggregate_foreign_key_with_table, true);
                         $aggregate_local_key_safe = $relation_builder->db->protect_identifiers($aggregate_local_key_with_table, true);
 
@@ -5373,13 +5772,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     if (is_callable($aggregate_config['callback'])) {
                         // Store original FROM to restore later
                         $original_from = $subquery->qb_from;
-                        
+
                         // Temporarily replace FROM with aliased version for callback processing
                         // This ensures WHERE conditions in callback use the subquery alias
                         $subquery->qb_from = [$subquery_alias];
-                        
+
                         $aggregate_config['callback']($subquery);
-                        
+
                         // Restore original FROM (which already includes alias)
                         $subquery->qb_from = $original_from;
                     }
@@ -5390,6 +5789,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     if ($table_name != $subquery_alias) $result_alias = $this->extract_table_or_alias($aggregate_config['alias']);
                     $relation_builder->db->select("($compiled_subquery) as {$result_alias}", false);
                 }
+            }
+
+            // Process pending WHERE aggregates from NestedQueryBuilder
+            if (!empty($relation_builder->pending_where_aggregates)) {
+                // Transfer pending_where_aggregates to base_db for processing
+                $relation_builder->db->pending_where_aggregates = $relation_builder->pending_where_aggregates;
+                // Process them using the relation table name as parent
+                $relation_builder->db->process_pending_where_aggregates($config['relation']);
+                // Clear the pending operations
+                $relation_builder->pending_where_aggregates = [];
             }
 
             foreach ($foreign_keys as $fk) {
@@ -5647,6 +6056,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->pending_where_has = [];
         $this->pending_aggregates = [];
         $this->pending_where_exists = [];
+        $this->pending_where_aggregates = [];
         $this->_calc_rows_enabled = false;
         return parent::reset_query();
     }
@@ -5689,28 +6099,28 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         // Execute the parent query() method
         $query = parent::query($sql, $binds, $return_object);
-        
+
         // Check if we need to process relations
         $has_relations = !empty($this->with_relations);
-        
+
         // If no relations or query failed, return standard result
         if ((!$has_relations) || !$query) return $query;
-        
+
         // Store relations
         $relations = $this->with_relations;
-        
+
         // Reset for next query
         $this->with_relations = [];
-        
+
         // Get result as array
         $data = $query->result_array();
-        
+
         // If no data, return empty CustomQueryBuilderResult
         if (empty($data)) return new CustomQueryBuilderResult([]);
-        
+
         // Process eager loading relations (with_one, with_many)
         if ($has_relations) $data = $this->load_relations($data, $relations);
-        
+
         // Return wrapped result with relations
         return new CustomQueryBuilderResult($data);
     }
