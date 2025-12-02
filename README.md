@@ -3,9 +3,9 @@
 > 🚀 Advanced Query Builder untuk CodeIgniter 3 dengan fitur Eager Loading Relations, Advanced Aggregates, dan SQL Injection Prevention yang Komprehensif
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![License](https://img. shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-MIT-green)
 ![CodeIgniter](https://img.shields.io/badge/CodeIgniter-3.x-red)
-![PHP](https://img.shields. io/badge/PHP-7. 0%2B-blue)
+![PHP](https://img.shields.io/badge/PHP-7.0%2B-blue)
 
 ---
 
