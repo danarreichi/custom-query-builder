@@ -1930,6 +1930,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
     protected $pending_where_aggregates = [];
 
     /**
+     * @var array Queue of pending WHERE operations in order (for proper grouping)
+     */
+    protected $pending_where_queue = [];
+
+    /**
+     * @var int Counter to track if we're inside a group() callback context
+     */
+    protected $_in_group_context = 0;
+
+    /**
      * @var bool Debug mode flag
      */
     protected $debug = true;
@@ -1982,54 +1992,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         return null;
-    }
-
-    /**
-     * Extract table name or alias from table string
-     * Returns the alias if present, otherwise returns the table name
-     * 
-     * @param string $table_string Table string that may contain alias and backticks
-     * @return string Table alias or name
-     */
-    protected function extract_table_or_alias($table_string)
-    {
-        // Remove backticks first
-        $cleaned = str_replace('`', '', trim($table_string));
-
-        // Split by space to separate table name and alias
-        $parts = preg_split('/\s+/', $cleaned);
-
-        // If there are multiple parts, check for AS keyword
-        if (count($parts) >= 2) {
-            // If AS keyword exists, return the part after AS
-            $as_index = array_search('AS', array_map('strtoupper', $parts));
-            if ($as_index !== false && isset($parts[$as_index + 1])) {
-                return $parts[$as_index + 1];
-            }
-            // Otherwise return the last part (assumed to be alias)
-            return $parts[count($parts) - 1];
-        }
-
-        // No alias found, return the table name itself
-        return $parts[0];
-    }
-
-    /**
-     * Extract clean table name from table string (removes alias and backticks)
-     * 
-     * @param string $table_string Table string that may contain alias and backticks
-     * @return string Clean table name
-     */
-    protected function extract_table_name($table_string)
-    {
-        // Remove any alias by splitting on space and taking first part
-        $table_parts = explode(' ', trim($table_string));
-        $table_name = trim($table_parts[0]);
-
-        // Remove backticks if present
-        $table_name = trim($table_name, '`');
-
-        return $table_name;
     }
 
     // =================================================================
@@ -2609,14 +2571,20 @@ class CustomQueryBuilder extends CI_DB_query_builder
             throw new InvalidArgumentException('Foreign keys and local keys count must match');
         }
 
-        // Store as pending operation to be processed later
-        $this->pending_where_exists[] = [
+        // Create pending operation data
+        $pending_item = [
             'type' => 'AND',
             'exists_type' => 'EXISTS',
             'relation' => $relation,
             'foreign_keys' => $processed_foreign_keys,
             'local_keys' => $processed_local_keys,
             'callback' => $callback
+        ];
+
+        // Add to queue for proper grouping
+        $this->pending_where_queue[] = [
+            'type' => 'where_exists',
+            'data' => $pending_item
         ];
 
         return $this;
@@ -2705,14 +2673,20 @@ class CustomQueryBuilder extends CI_DB_query_builder
             });
         }
 
-        // Store as pending operation to be processed later
-        $this->pending_where_exists[] = [
+        // Create pending operation data
+        $pending_item = [
             'type' => 'OR',
             'exists_type' => 'EXISTS',
             'relation' => $relation,
             'foreign_keys' => $processed_foreign_keys,
             'local_keys' => $processed_local_keys,
             'callback' => $callback
+        ];
+
+        // Add to queue for proper grouping
+        $this->pending_where_queue[] = [
+            'type' => 'where_exists',
+            'data' => $pending_item
         ];
 
         return $this;
@@ -2769,14 +2743,20 @@ class CustomQueryBuilder extends CI_DB_query_builder
             throw new InvalidArgumentException('Foreign keys and local keys count must match');
         }
 
-        // Store as pending operation to be processed later
-        $this->pending_where_exists[] = [
+        // Create pending operation data
+        $pending_item = [
             'type' => 'AND',
             'exists_type' => 'NOT EXISTS',
             'relation' => $relation,
             'foreign_keys' => $processed_foreign_keys,
             'local_keys' => $processed_local_keys,
             'callback' => $callback
+        ];
+
+        // Add to queue for proper grouping
+        $this->pending_where_queue[] = [
+            'type' => 'where_exists',
+            'data' => $pending_item
         ];
 
         return $this;
@@ -2867,14 +2847,20 @@ class CustomQueryBuilder extends CI_DB_query_builder
             });
         }
 
-        // Store as pending operation to be processed later
-        $this->pending_where_exists[] = [
+        // Create pending operation data
+        $pending_item = [
             'type' => 'OR',
             'exists_type' => 'NOT EXISTS',
             'relation' => $relation,
             'foreign_keys' => $processed_foreign_keys,
             'local_keys' => $processed_local_keys,
             'callback' => $callback
+        ];
+
+        // Add to queue for proper grouping
+        $this->pending_where_queue[] = [
+            'type' => 'where_exists',
+            'data' => $pending_item
         ];
 
         return $this;
@@ -3310,15 +3296,31 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         if (!is_callable($callback)) throw new InvalidArgumentException('Callback must be callable');
 
+        // Track that we're inside a group context
+        $this->_in_group_context++;
+        
         $this->group_start();
 
         try {
             $callback($this);
+            
+            // Process any pending where_exists that were added inside this group
+            // Try to get parent table from qb_from if _temp_table_name is not set
+            $parent_table = $this->_temp_table_name;
+            if (empty($parent_table) && !empty($this->qb_from)) {
+                $parent_table = $this->qb_from[0];
+            }
+            // Process queue even if parent_table is null (local key might already have table prefix)
+            if (!empty($this->pending_where_queue)) {
+                $this->process_pending_where_queue($parent_table);
+            }
         } catch (Exception $e) {
+            $this->_in_group_context--;
             $this->group_end();
             throw $e;
         }
 
+        $this->_in_group_context--;
         $this->group_end();
         return $this;
     }
@@ -3353,15 +3355,31 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         if (!is_callable($callback)) throw new InvalidArgumentException('Callback must be callable');
 
+        // Track that we're inside a group context
+        $this->_in_group_context++;
+        
         $this->or_group_start();
 
         try {
             $callback($this);
+            
+            // Process any pending where_exists that were added inside this group
+            // Try to get parent table from qb_from if _temp_table_name is not set
+            $parent_table = $this->_temp_table_name;
+            if (empty($parent_table) && !empty($this->qb_from)) {
+                $parent_table = $this->qb_from[0];
+            }
+            // Process queue even if parent_table is null (local key might already have table prefix)
+            if (!empty($this->pending_where_queue)) {
+                $this->process_pending_where_queue($parent_table);
+            }
         } catch (Exception $e) {
+            $this->_in_group_context--;
             $this->group_end();
             throw $e;
         }
 
+        $this->_in_group_context--;
         $this->group_end();
         return $this;
     }
@@ -4271,9 +4289,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->process_pending_where_has();
         $this->process_pending_aggregates();
 
-        // Process pending WHERE EXISTS relations
+        // Process pending WHERE queue (handles grouping properly)
         $parent_table = !empty($table) ? $table : $this->_temp_table_name;
         if (!empty($parent_table)) {
+            $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
         }
@@ -4307,9 +4326,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->process_pending_where_has();
         $this->process_pending_aggregates();
 
-        // Process pending WHERE EXISTS relations  
+        // Process pending WHERE queue and WHERE EXISTS relations  
         $parent_table = $this->_temp_table_name;
         if (!empty($parent_table)) {
+            $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
         }
 
@@ -4324,6 +4344,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $backup_pending_aggregates = $this->pending_aggregates;
             $backup_pending_where_has = $this->pending_where_has;
             $backup_pending_where_exists = $this->pending_where_exists;
+            $backup_pending_where_queue = $this->pending_where_queue;
 
             // First, get the compiled query for counting (without eager loading)
             $count_query = clone $this;
@@ -4357,6 +4378,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->pending_aggregates = $backup_pending_aggregates;
             $this->pending_where_has = $backup_pending_where_has;
             $this->pending_where_exists = $backup_pending_where_exists;
+            $this->pending_where_queue = $backup_pending_where_queue;
 
             // Reset calc_rows flag before eager loading
             $this->_calc_rows_enabled = false;
@@ -4449,14 +4471,19 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function count_all_results($table = '', $reset = true)
     {
-        if ($table !== '') $this->from($table);
+        if ($table !== '') {
+            $this->_temp_table_name = $table;
+            $this->from($table);
+        }
 
         $this->process_pending_where_has();
         $this->process_pending_aggregates();
 
         $parent_table = !empty($table) ? $table : $this->_temp_table_name;
         if (!empty($parent_table)) {
+            $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
+            $this->process_pending_where_aggregates($parent_table);
         }
 
         $original_relations = $this->with_relations;
@@ -4478,14 +4505,19 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function get_compiled_select($table = '', $reset = true)
     {
-        if ($table !== '') $this->from($table);
+        if ($table !== '') {
+            $this->_temp_table_name = $table;
+            $this->from($table);
+        }
 
         $this->process_pending_where_has();
         $this->process_pending_aggregates();
 
         $parent_table = !empty($table) ? $table : $this->_temp_table_name;
         if (!empty($parent_table)) {
+            $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
+            $this->process_pending_where_aggregates($parent_table);
         }
 
         $original_relations = $this->with_relations;
@@ -5279,6 +5311,109 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * This method builds and executes the WHERE EXISTS subqueries based on
      * the stored pending WHERE EXISTS operations.
      * 
+     * @param string|null $parent_table Name of the parent table (can be null)
+     * @return void
+     */
+    protected function process_pending_where_queue($parent_table)
+    {
+        if (empty($this->pending_where_queue)) return;
+
+        // Extract table alias or name from parent_table (can be null)
+        $parent_table_identifier = $parent_table ? $this->extract_table_or_alias($parent_table) : null;
+
+        // Store queue and clear to prevent re-processing
+        $queue = $this->pending_where_queue;
+        $this->pending_where_queue = [];
+
+        foreach ($queue as $item) {
+            if ($item['type'] === 'where_exists') {
+                $this->process_single_where_exists($parent_table_identifier, $item['data']);
+            }
+        }
+    }
+
+    /**
+     * Process a single WHERE EXISTS operation
+     * 
+     * @param string|null $parent_table_identifier Parent table name or alias (can be null if local key has table prefix)
+     * @param array $exists_config Configuration array for WHERE EXISTS
+     * @return void
+     */
+    protected function process_single_where_exists($parent_table_identifier, $exists_config)
+    {
+        // Build EXISTS subquery - clone current instance to maintain CustomQueryBuilder type
+        $subquery = clone $this;
+        $subquery->reset_query();
+
+        // Select 1 for EXISTS
+        $subquery->select('1');
+
+        // Extract table name and alias from relation (supports "table_name alias" format)
+        $relation_identifier = $this->extract_table_or_alias($exists_config['relation']);
+
+        // Use the relation string as is for FROM clause (may contain alias)
+        $subquery->from($exists_config['relation']);
+
+        // Build WHERE conditions for key matching
+        $foreign_keys = $exists_config['foreign_keys'];
+        $local_keys = $exists_config['local_keys'];
+
+        for ($i = 0; $i < count($foreign_keys); $i++) {
+            // Use relation identifier (alias if present, otherwise table name) for foreign key
+            $foreign_key_with_table = $relation_identifier . '.' . $foreign_keys[$i];
+
+            // Check if local key already has table reference (contains a dot)
+            if (strpos($local_keys[$i], '.') !== false) {
+                // Local key already has table reference (e.g., 'msd.iditem'), use as is
+                $local_key_with_table = $local_keys[$i];
+            } else {
+                // Local key is just column name, prepend parent table identifier if available
+                if (empty($parent_table_identifier)) {
+                    // If no parent table, just use the column name (might cause issues, but better than breaking)
+                    $local_key_with_table = $local_keys[$i];
+                } else {
+                    $local_key_with_table = $parent_table_identifier . '.' . $local_keys[$i];
+                }
+            }
+
+            $foreign_key_safe = $this->protect_identifiers($foreign_key_with_table, true);
+            $local_key_safe = $this->protect_identifiers($local_key_with_table, true);
+
+            $subquery->where("{$foreign_key_safe} = {$local_key_safe}", null, false);
+        }
+
+        // Execute callback if provided
+        if ($exists_config['callback'] !== null) {
+            if (!is_callable($exists_config['callback'])) {
+                throw new InvalidArgumentException('Callback must be callable');
+            }
+            $exists_config['callback']($subquery);
+
+            // Process any pending WHERE queue operations in the subquery recursively
+            if (!empty($subquery->pending_where_queue)) {
+                $subquery->process_pending_where_queue($relation_identifier);
+            }
+        }
+
+        // Get the compiled subquery
+        $compiled_subquery = $subquery->get_compiled_select();
+
+        // Add EXISTS/NOT EXISTS condition based on type
+        $exists_clause = "{$exists_config['exists_type']} ({$compiled_subquery})";
+
+        if ($exists_config['type'] === 'OR') {
+            $this->or_where($exists_clause, null, false);
+        } else {
+            $this->where($exists_clause, null, false);
+        }
+    }
+
+    /**
+     * Process pending WHERE EXISTS operations
+     * 
+     * This method builds and executes the WHERE EXISTS subqueries based on
+     * the stored pending WHERE EXISTS operations.
+     * 
      * @param string $parent_table Name of the parent table
      * @return void
      */
@@ -5391,9 +5526,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $original_debug = $this->db_debug;
         $this->db_debug = FALSE;
 
-        // Process pending WHERE EXISTS relations
+        // Process pending WHERE queue and WHERE EXISTS relations
         $parent_table = !empty($table) ? $table : $this->_temp_table_name;
         if (!empty($parent_table)) {
+            $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
         }
 
@@ -6057,6 +6193,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->pending_aggregates = [];
         $this->pending_where_exists = [];
         $this->pending_where_aggregates = [];
+        $this->pending_where_queue = [];
+        $this->_in_group_context = 0;
         $this->_calc_rows_enabled = false;
         return parent::reset_query();
     }
