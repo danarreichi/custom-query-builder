@@ -401,6 +401,76 @@ trait QueryValidationTrait
         // Should be zero if balanced
         return $count === 0;
     }
+
+    /**
+     * Validate boolean parameter
+     *
+     * @param mixed $value Value to validate
+     * @param string $param_name Parameter name for error message
+     * @return void
+     * @throws InvalidArgumentException
+     */
+    protected function validate_boolean_param($value, $param_name)
+    {
+        if (!is_bool($value)) {
+            throw new InvalidArgumentException("Parameter {$param_name} must be boolean, " . gettype($value) . " given.");
+        }
+    }
+
+    /**
+     * Validate column or custom expression
+     *
+     * @param string $column Column name or expression
+     * @param bool $is_custom_expression Whether this is a custom expression
+     * @return void
+     * @throws InvalidArgumentException
+     */
+    protected function validate_column_or_expression($column, $is_custom_expression)
+    {
+        $this->validate_boolean_param($is_custom_expression, 'is_custom_expression');
+
+        if ($is_custom_expression) {
+            if (!$this->is_valid_custom_expression($column)) {
+                throw new InvalidArgumentException("Invalid custom expression: {$column}. Custom expressions can only contain column names, aggregate functions, and mathematical operators.");
+            }
+        } else {
+            if (!$this->is_valid_column_name($column)) {
+                throw new InvalidArgumentException("Invalid column name: {$column}. Column names can only contain alphanumeric characters, underscores, and dots.");
+            }
+        }
+    }
+
+    /**
+     * Process and validate keys (foreign or local)
+     *
+     * @param string|array $keys Key(s) to process
+     * @param string $key_type Type of key for error message ('local key', 'foreign key', etc.)
+     * @return array Processed keys
+     * @throws InvalidArgumentException
+     */
+    protected function process_keys($keys, $key_type = 'key')
+    {
+        $processed = [];
+        $keys_array = is_array($keys) ? $keys : [$keys];
+
+        foreach ($keys_array as $key) {
+            // Extract key name from dot notation if present
+            if (strpos($key, '.') !== false) {
+                $parts = explode('.', $key);
+                $key_name = end($parts);
+            } else {
+                $key_name = $key;
+            }
+
+            if (!$this->is_valid_column_name($key_name)) {
+                throw new InvalidArgumentException("Invalid {$key_type}: {$key}. Keys can only contain alphanumeric characters, underscores, and dots.");
+            }
+
+            $processed[] = $key_name;
+        }
+
+        return $processed;
+    }
 }
 
 /**
@@ -576,6 +646,35 @@ class CustomQueryBuilderResult
     }
 
     /**
+     * Deep convert data recursively
+     * 
+     * @param mixed $data Data to convert
+     * @param bool $to_object Whether to convert associative arrays to objects
+     * @param int $depth Current recursion depth
+     * @param int $maxDepth Maximum allowed recursion depth
+     * @return mixed Converted data
+     */
+    private function deep_convert($data, $to_object = false, $depth = 0, $maxDepth = 20)
+    {
+        if ($depth > $maxDepth) return null; // Prevent infinite recursion
+
+        if (is_object($data)) $data = (array) $data;
+        if (is_array($data)) {
+            foreach ($data as $k => $v) {
+                if (is_object($v) || is_array($v)) {
+                    $data[$k] = $this->deep_convert($v, $to_object, $depth + 1, $maxDepth);
+                }
+            }
+
+            if ($to_object && !$this->is_array_list($data)) {
+                return (object) $data;
+            }
+        }
+
+        return $data;
+    }
+
+    /**
      * Deep convert object to array recursively
      * 
      * @param mixed $data Data to convert
@@ -585,16 +684,7 @@ class CustomQueryBuilderResult
      */
     private function deep_object_to_array($data, $depth = 0, $maxDepth = 20)
     {
-        if ($depth > $maxDepth) return null; // Prevent infinite recursion
-
-        if (is_object($data)) $data = (array) $data;
-        if (is_array($data)) {
-            foreach ($data as $k => $v) {
-                if (is_object($v) || is_array($v)) $data[$k] = $this->deep_object_to_array($v, $depth + 1, $maxDepth);
-            }
-        }
-
-        return $data;
+        return $this->deep_convert($data, false, $depth, $maxDepth);
     }
 
     /**
@@ -607,24 +697,7 @@ class CustomQueryBuilderResult
      */
     private function deep_array_to_object($data, $depth = 0, $maxDepth = 20)
     {
-        if ($depth > $maxDepth) return null; // Prevent infinite recursion
-
-        if (is_object($data)) $data = (array) $data;
-        if (is_array($data)) {
-            if ($this->is_array_list($data)) {
-                foreach ($data as $k => $v) {
-                    if (is_array($v) || is_object($v)) $data[$k] = $this->deep_array_to_object($v, $depth + 1, $maxDepth);
-                }
-                return $data;
-            } else {
-                foreach ($data as $k => $v) {
-                    if (is_array($v) || is_object($v)) $data[$k] = $this->deep_array_to_object($v, $depth + 1, $maxDepth);
-                }
-                return (object) $data;
-            }
-        }
-
-        return $data;
+        return $this->deep_convert($data, true, $depth, $maxDepth);
     }
 
     /**
@@ -784,6 +857,46 @@ class NestedQueryBuilder
     }
 
     /**
+     * Add eager loading relation with aggregation (internal helper)
+     * 
+     * @param string $type Aggregate type ('count', 'sum', 'avg', 'max', 'min')
+     * @param string|array $relation Relation name or array with alias
+     * @param string|array $foreignKey Foreign key(s)
+     * @param string|array $localKey Local key(s)
+     * @param string|null $column Column to aggregate (null for count)
+     * @param bool $is_custom_expression Whether $column is a custom SQL expression
+     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for relation query
+     * @return $this
+     */
+    protected function add_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $is_custom_expression = false, $callback = null)
+    {
+        // Validate column if provided
+        if ($column !== null) {
+            $this->validate_column_or_expression($column, $is_custom_expression);
+        }
+
+        $relation_name = is_array($relation) ? key($relation) : $relation;
+        $default_alias = $relation_name . '_' . $type;
+        $aggregate_alias = is_array($relation) ? current($relation) : $default_alias;
+
+        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
+        $local_keys = is_array($localKey) ? $localKey : [$localKey];
+
+        $this->pending_aggregates[] = [
+            'type' => $type,
+            'relation' => $relation_name,
+            'foreign_key' => $foreign_keys,
+            'local_key' => $local_keys,
+            'alias' => $aggregate_alias,
+            'callback' => $callback,
+            'column' => $column,
+            'is_custom_expression' => $is_custom_expression
+        ];
+
+        return $this;
+    }
+
+    /**
      * Add eager loading relation with count aggregation
      * 
      * @param string|array $relation Relation name or array with alias
@@ -794,24 +907,7 @@ class NestedQueryBuilder
      */
     public function with_count($relation, $foreignKey, $localKey, $callback = null)
     {
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $count_alias = is_array($relation) ? current($relation) : $relation_name . '_count';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'count',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $count_alias,
-            'callback' => $callback,
-            'column' => null,
-            'is_custom_expression' => false
-        ];
-
-        return $this;
+        return $this->add_aggregate('count', $relation, $foreignKey, $localKey, null, false, $callback);
     }
 
     /**
@@ -864,41 +960,7 @@ class NestedQueryBuilder
      */
     public function with_sum($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
-        // VALIDASI KEAMANAN: Pastikan $is_custom_expression adalah boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        if ($is_custom_expression) {
-            //  VALIDASI KEAMANAN untuk custom expression
-            if (!$this->is_valid_custom_expression($column)) {
-                throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-            }
-        } else {
-            //  VALIDASI KEAMANAN untuk column name biasa
-            if (!$this->is_valid_column_name($column)) {
-                throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-            }
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $sum_alias = is_array($relation) ? current($relation) : $relation_name . '_sum';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'sum',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $sum_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
+        return $this->add_aggregate('sum', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
     /**
@@ -940,41 +1002,7 @@ class NestedQueryBuilder
      */
     public function with_avg($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
-        // VALIDASI KEAMANAN: Pastikan $is_custom_expression adalah boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        if ($is_custom_expression) {
-            //  VALIDASI KEAMANAN untuk custom expression
-            if (!$this->is_valid_custom_expression($column)) {
-                throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-            }
-        } else {
-            //  VALIDASI KEAMANAN untuk column name biasa
-            if (!$this->is_valid_column_name($column)) {
-                throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-            }
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $avg_alias = is_array($relation) ? current($relation) : $relation_name . '_avg';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'avg',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $avg_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
+        return $this->add_aggregate('avg', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
     /**
@@ -1016,41 +1044,7 @@ class NestedQueryBuilder
      */
     public function with_max($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
-        // VALIDASI KEAMANAN: Pastikan $is_custom_expression adalah boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        if ($is_custom_expression) {
-            //  VALIDASI KEAMANAN untuk custom expression
-            if (!$this->is_valid_custom_expression($column)) {
-                throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-            }
-        } else {
-            //  VALIDASI KEAMANAN untuk column name biasa
-            if (!$this->is_valid_column_name($column)) {
-                throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-            }
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $max_alias = is_array($relation) ? current($relation) : $relation_name . '_max';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'max',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $max_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
+        return $this->add_aggregate('max', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
     /**
@@ -1092,41 +1086,7 @@ class NestedQueryBuilder
      */
     public function with_min($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
-        // VALIDASI KEAMANAN: Pastikan $is_custom_expression adalah boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        if ($is_custom_expression) {
-            //  VALIDASI KEAMANAN untuk custom expression
-            if (!$this->is_valid_custom_expression($column)) {
-                throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-            }
-        } else {
-            //  VALIDASI KEAMANAN untuk column name biasa
-            if (!$this->is_valid_column_name($column)) {
-                throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-            }
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $min_alias = is_array($relation) ? current($relation) : $relation_name . '_min';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'min',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $min_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
+        return $this->add_aggregate('min', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
     /**
@@ -2385,6 +2345,42 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Add WHERE EXISTS/NOT EXISTS condition with callback (internal helper)
+     * 
+     * @param string $condition_type Condition type ('AND' or 'OR')
+     * @param string $exists_type EXISTS type ('EXISTS' or 'NOT EXISTS')
+     * @param callable(CustomQueryBuilder): void $callback Callback to build subquery
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_where_exists_callback($condition_type, $exists_type, $callback)
+    {
+        if (!is_callable($callback)) {
+            throw new InvalidArgumentException('Callback must be callable');
+        }
+
+        $subquery = clone $this;
+        $subquery->reset_query();
+
+        // Execute callback to build subquery
+        $callback($subquery);
+
+        // Process any pending operations in subquery
+        if (!empty($subquery->pending_where_exists)) {
+            $subquery->process_pending_where_exists('__parent__');
+        }
+
+        // Get the compiled subquery
+        $compiled_subquery = $subquery->get_compiled_select();
+
+        // Add condition
+        $clause = "{$exists_type} ({$compiled_subquery})";
+        return $condition_type === 'OR' ? 
+            $this->or_where($clause, null, false) : 
+            $this->where($clause, null, false);
+    }
+
+    /**
      * Add WHERE NOT EXISTS condition with callback
      * 
      * Example:
@@ -2411,28 +2407,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_not_exists($callback)
     {
-        if (!is_callable($callback)) {
-            throw new InvalidArgumentException('Callback must be callable');
-        }
-
-        $subquery = clone $this;
-        $subquery->reset_query();
-
-        // Execute callback to build subquery
-        $callback($subquery);
-
-        // Process any pending operations in subquery
-        if (!empty($subquery->pending_where_exists)) {
-            $subquery->process_pending_where_exists('__parent__');
-        }
-
-        // Get the compiled subquery
-        $compiled_subquery = $subquery->get_compiled_select();
-
-        // Add NOT EXISTS condition
-        $this->where("NOT EXISTS ({$compiled_subquery})", null, false);
-
-        return $this;
+        return $this->add_where_exists_callback('AND', 'NOT EXISTS', $callback);
     }
 
     /**
@@ -2444,28 +2419,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_where_exists($callback)
     {
-        if (!is_callable($callback)) {
-            throw new InvalidArgumentException('Callback must be callable');
-        }
-
-        $subquery = clone $this;
-        $subquery->reset_query();
-
-        // Execute callback to build subquery
-        $callback($subquery);
-
-        // Process any pending operations in subquery
-        if (!empty($subquery->pending_where_exists)) {
-            $subquery->process_pending_where_exists('__parent__');
-        }
-
-        // Get the compiled subquery
-        $compiled_subquery = $subquery->get_compiled_select();
-
-        // Add OR EXISTS condition
-        $this->or_where("EXISTS ({$compiled_subquery})", null, false);
-
-        return $this;
+        return $this->add_where_exists_callback('OR', 'EXISTS', $callback);
     }
 
     /**
@@ -2477,28 +2431,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_where_not_exists($callback)
     {
-        if (!is_callable($callback)) {
-            throw new InvalidArgumentException('Callback must be callable');
-        }
-
-        $subquery = clone $this;
-        $subquery->reset_query();
-
-        // Execute callback to build subquery
-        $callback($subquery);
-
-        // Process any pending operations in subquery
-        if (!empty($subquery->pending_where_exists)) {
-            $subquery->process_pending_where_exists('__parent__');
-        }
-
-        // Get the compiled subquery
-        $compiled_subquery = $subquery->get_compiled_select();
-
-        // Add OR NOT EXISTS condition
-        $this->or_where("NOT EXISTS ({$compiled_subquery})", null, false);
-
-        return $this;
+        return $this->add_where_exists_callback('OR', 'NOT EXISTS', $callback);
     }
 
     /**
@@ -3534,6 +3467,46 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Add eager loading relation with aggregation (internal helper)
+     * 
+     * @param string $type Aggregate type ('count', 'sum', 'avg', 'max', 'min')
+     * @param string|array $relation Relation name or array with alias
+     * @param string|array $foreignKey Foreign key(s)
+     * @param string|array $localKey Local key(s)
+     * @param string|null $column Column to aggregate (null for count)
+     * @param bool $is_custom_expression Whether $column is a custom SQL expression
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
+     * @return $this
+     */
+    protected function add_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $is_custom_expression = false, $callback = null)
+    {
+        // Validate column if provided
+        if ($column !== null) {
+            $this->validate_column_or_expression($column, $is_custom_expression);
+        }
+
+        $relation_name = is_array($relation) ? key($relation) : $relation;
+        $default_alias = $relation_name . '_' . $type;
+        $aggregate_alias = is_array($relation) ? current($relation) : $default_alias;
+
+        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
+        $local_keys = is_array($localKey) ? $localKey : [$localKey];
+
+        $this->pending_aggregates[] = [
+            'type' => $type,
+            'relation' => $relation_name,
+            'foreign_key' => $foreign_keys,
+            'local_key' => $local_keys,
+            'alias' => $aggregate_alias,
+            'callback' => $callback,
+            'column' => $column,
+            'is_custom_expression' => $is_custom_expression
+        ];
+
+        return $this;
+    }
+
+    /**
      * Add eager loading relation with count aggregation
      * 
      * Now works as subquery in main SELECT clause for better sorting capability.
@@ -3567,24 +3540,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function with_count($relation, $foreignKey, $localKey, $callback = null)
     {
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $count_alias = is_array($relation) ? current($relation) : $relation_name . '_count';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'count',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $count_alias,
-            'callback' => $callback,
-            'column' => null,
-            'is_custom_expression' => false
-        ];
-
-        return $this;
+        return $this->add_aggregate('count', $relation, $foreignKey, $localKey, null, false, $callback);
     }
 
     /**
@@ -3637,41 +3593,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function with_sum($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
-        // VALIDASI KEAMANAN: Pastikan $is_custom_expression adalah boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        if ($is_custom_expression) {
-            //  VALIDASI KEAMANAN untuk custom expression
-            if (!$this->is_valid_custom_expression($column)) {
-                throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-            }
-        } else {
-            //  VALIDASI KEAMANAN untuk column name biasa
-            if (!$this->is_valid_column_name($column)) {
-                throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-            }
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $sum_alias = is_array($relation) ? current($relation) : $relation_name . '_sum';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'sum',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $sum_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
+        return $this->add_aggregate('sum', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
     /**
@@ -3713,41 +3635,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function with_avg($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
-        // VALIDASI KEAMANAN: Pastikan $is_custom_expression adalah boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        if ($is_custom_expression) {
-            //  VALIDASI KEAMANAN untuk custom expression
-            if (!$this->is_valid_custom_expression($column)) {
-                throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-            }
-        } else {
-            //  VALIDASI KEAMANAN untuk column name biasa
-            if (!$this->is_valid_column_name($column)) {
-                throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-            }
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $avg_alias = is_array($relation) ? current($relation) : $relation_name . '_avg';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'avg',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $avg_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
+        return $this->add_aggregate('avg', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
     /**
@@ -3789,41 +3677,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function with_max($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
-        // VALIDASI KEAMANAN: Pastikan $is_custom_expression adalah boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        if ($is_custom_expression) {
-            //  VALIDASI KEAMANAN untuk custom expression
-            if (!$this->is_valid_custom_expression($column)) {
-                throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-            }
-        } else {
-            //  VALIDASI KEAMANAN untuk column name biasa
-            if (!$this->is_valid_column_name($column)) {
-                throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-            }
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $max_alias = is_array($relation) ? current($relation) : $relation_name . '_max';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'max',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $max_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
+        return $this->add_aggregate('max', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
     /**
@@ -3866,41 +3720,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function with_min($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
-        // VALIDASI KEAMANAN: Pastikan $is_custom_expression adalah boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        if ($is_custom_expression) {
-            //  VALIDASI KEAMANAN untuk custom expression
-            if (!$this->is_valid_custom_expression($column)) {
-                throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-            }
-        } else {
-            //  VALIDASI KEAMANAN untuk column name biasa
-            if (!$this->is_valid_column_name($column)) {
-                throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-            }
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $min_alias = is_array($relation) ? current($relation) : $relation_name . '_min';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'min',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $min_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
+        return $this->add_aggregate('min', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
     /**
