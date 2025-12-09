@@ -15,6 +15,55 @@ require BASEPATH . 'database/DB_query_builder.php';
 trait QueryValidationTrait
 {
     /**
+     * Common dangerous SQL patterns to block
+     * @var array
+     */
+    protected static $DANGEROUS_SQL_PATTERNS = [
+        '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
+        '/[\'";-]/',        // Dash character blocked
+        '/--/',             // SQL comment pattern
+        '/\/\*/',           // Multi-line comment start
+        '/\*\//',           // Multi-line comment end
+        '/\s+--/',          // Space followed by comment
+        '/-{2,}/',          // Multiple dashes
+    ];
+
+    /**
+     * Extended dangerous patterns for table/column validation
+     * @var array
+     */
+    protected static $EXTENDED_DANGEROUS_PATTERNS = [
+        '/\bxp_/',          // Extended stored procedures
+        '/\bsp_/',          // Stored procedures
+        '/\|\|/',           // OR operator in some SQL dialects
+        '/&&/',             // AND operator in some SQL dialects
+    ];
+
+    /**
+     * Allowed comparison operators
+     * @var array
+     */
+    protected static $ALLOWED_OPERATORS = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+
+    /**
+     * Allowed aggregate types
+     * @var array
+     */
+    protected static $ALLOWED_AGGREGATE_TYPES = ['count', 'sum', 'avg', 'min', 'max', 'custom'];
+
+    /**
+     * Allowed SQL functions in expressions
+     * @var array
+     */
+    protected static $ALLOWED_SQL_FUNCTIONS = [
+        'SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'ROUND', 'FLOOR', 'CEIL', 'ABS',
+        'COALESCE', 'IFNULL', 'NULLIF', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
+        'DATEDIFF', 'TIMESTAMPDIFF', 'DAY', 'MONTH', 'YEAR', 'NOW', 'DATE',
+        'CONCAT', 'SUBSTRING', 'TRIM', 'UPPER', 'LOWER', 'LENGTH', 'REPLACE',
+        'CAST', 'CONVERT', 'IF', 'AND', 'OR', 'IS', 'NOT', 'NULL', 'AS'
+    ];
+
+    /**
      * Extract clean table name from table string (removes alias and backticks)
      *
      * @param string $table_string Table string that may contain alias and backticks
@@ -63,6 +112,38 @@ trait QueryValidationTrait
     }
 
     /**
+     * Internal helper to validate identifier (column or table name)
+     *
+     * @param string $name Identifier to validate
+     * @param string $regex_pattern Regex pattern for allowed format
+     * @param bool $check_extended Whether to check extended dangerous patterns
+     * @return bool True if valid, false otherwise
+     */
+    protected function validate_identifier_internal($name, $regex_pattern, $check_extended = false)
+    {
+        if (!is_string($name) || empty($name)) return false;
+
+        if (!preg_match($regex_pattern, $name)) return false;
+
+        // Check against common SQL injection patterns
+        foreach (self::$DANGEROUS_SQL_PATTERNS as $pattern) {
+            if (preg_match($pattern, $name)) return false;
+        }
+
+        // Check extended patterns if needed
+        if ($check_extended) {
+            foreach (self::$EXTENDED_DANGEROUS_PATTERNS as $pattern) {
+                if (preg_match($pattern, $name)) return false;
+            }
+        }
+
+        // Check length to prevent buffer overflow attacks
+        if (strlen($name) > 64) return false;
+
+        return true;
+    }
+
+    /**
      * Validate column name to prevent SQL injection
      *
      * @param string $column_name Column name to validate
@@ -70,46 +151,12 @@ trait QueryValidationTrait
      */
     protected function is_valid_column_name($column_name)
     {
-        // Check if column name is string and not empty
-        if (!is_string($column_name) || empty($column_name)) {
-            return false;
-        }
-
-        // Allow only alphanumeric characters, underscores, and dots
-        // NO DASHES allowed to prevent SQL comment injection
-        $pattern = '/^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?$/';
-
-        if (!preg_match($pattern, $column_name)) {
-            return false;
-        }
-
-        // Check against common SQL injection patterns including dashes
-        $dangerous_patterns = [
-            '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
-            '/[\'";-]/',        // ADDED: Dash character blocked
-            '/--/',             // SQL comment pattern
-            '/\/\*/',           // Multi-line comment start
-            '/\*\//',           // Multi-line comment end
-            '/\bxp_/',          // Extended stored procedures
-            '/\bsp_/',          // Stored procedures
-            '/\|\|/',           // OR operator in some SQL dialects
-            '/&&/',             // AND operator in some SQL dialects
-            '/\s+--/',          // Space followed by comment
-            '/-{2,}/',          // Multiple dashes
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $column_name)) {
-                return false;
-            }
-        }
-
-        // Check length to prevent buffer overflow attacks
-        if (strlen($column_name) > 64) {
-            return false;
-        }
-
-        return true;
+        // Allow only alphanumeric characters, underscores, and dots (for table.column)
+        return $this->validate_identifier_internal(
+            $column_name,
+            '/^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?$/',
+            true  // Check extended patterns for columns
+        );
     }
 
     /**
@@ -120,42 +167,64 @@ trait QueryValidationTrait
      */
     protected function is_valid_table_name($table_name)
     {
-        // Check if table name is string and not empty
-        if (!is_string($table_name) || empty($table_name)) {
-            return false;
-        }
-
         // Allow only alphanumeric characters and underscores
-        // NO DASHES allowed to prevent SQL comment injection
-        $pattern = '/^[a-zA-Z_][a-zA-Z0-9_]*$/';
+        return $this->validate_identifier_internal(
+            $table_name,
+            '/^[a-zA-Z_][a-zA-Z0-9_]*$/',
+            false  // Don't check extended patterns for tables
+        );
+    }
 
-        if (!preg_match($pattern, $table_name)) {
-            return false;
+    /**
+     * Dangerous patterns specifically for expression validation
+     * @var array
+     */
+    protected static $EXPRESSION_DANGEROUS_PATTERNS = [
+        '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
+        '/[\'";]/',           // Quotes and semicolons
+        '/--/',               // SQL comments
+        '/\/\*/',             // Multi-line comment start
+        '/\*\//',             // Multi-line comment end
+        '/\|\|/',             // String concatenation operator
+        '/&&/',               // Logical AND operator
+        '/\bxp_/',            // Extended stored procedures
+        '/\bsp_/',            // Stored procedures
+    ];
+
+    /**
+     * Internal helper for expression validation
+     *
+     * @param string $expression Expression to validate
+     * @param string $allowed_char_pattern Regex for allowed characters
+     * @param array $extra_dangerous_patterns Additional dangerous patterns to check
+     * @return bool True if basic checks pass, false otherwise
+     */
+    protected function validate_expression_base($expression, $allowed_char_pattern, $extra_dangerous_patterns = [])
+    {
+        if (!is_string($expression) || empty($expression)) return false;
+        if (!preg_match($allowed_char_pattern, $expression)) return false;
+        // Check expression-specific dangerous patterns
+        foreach (self::$EXPRESSION_DANGEROUS_PATTERNS as $pattern) {
+            if (preg_match($pattern, $expression)) return false;
         }
-
-        // Check against common SQL injection patterns including dashes
-        $dangerous_patterns = [
-            '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
-            '/[\'";-]/',        // ADDED: Dash character blocked
-            '/--/',             // SQL comment pattern
-            '/\/\*/',           // Multi-line comment start
-            '/\*\//',           // Multi-line comment end
-            '/\s+--/',          // Space followed by comment
-            '/-{2,}/',          // Multiple dashes
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $table_name)) {
-                return false;
-            }
+        // Check extra dangerous patterns
+        foreach ($extra_dangerous_patterns as $pattern) {
+            if (preg_match($pattern, $expression)) return false;
         }
-
-        // Check length to prevent buffer overflow attacks
-        if (strlen($table_name) > 64) {
-            return false;
-        }
-
+        if (!$this->are_parentheses_balanced($expression)) return false;
+        if (strlen($expression) > 500) return false;
         return true;
+    }
+
+    /**
+     * Check if token is in allowed SQL functions list
+     *
+     * @param string $token Token to check
+     * @return bool True if allowed, false otherwise
+     */
+    protected function is_allowed_sql_function($token)
+    {
+        return in_array(strtoupper($token), self::$ALLOWED_SQL_FUNCTIONS);
     }
 
     /**
@@ -166,107 +235,15 @@ trait QueryValidationTrait
      */
     protected function is_valid_custom_expression($expression)
     {
-        // Check if expression is string and not empty
-        if (!is_string($expression) || empty($expression)) {
-            return false;
-        }
-
-        // Allow mathematical operations, column names, parentheses, comparison operators, and common SQL functions
-        $allowed_pattern = '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/';
-
-        if (!preg_match($allowed_pattern, $expression)) {
-            return false;
-        }
-
-        // Block dangerous SQL patterns (but allow CASE/WHEN/THEN/ELSE/END and AND/OR for conditional expressions)
-        $dangerous_patterns = [
-            '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
-            '/[\'";]/',           // Quotes and semicolons
-            '/--/',               // SQL comments
-            '/\/\*/',             // Multi-line comment start
-            '/\*\//',             // Multi-line comment end
-            '/\|\|/',             // String concatenation operator
-            '/&&/',               // Logical AND operator
-            '/\bxp_/',            // Extended stored procedures
-            '/\bsp_/',            // Stored procedures
-            '/\bSELECT\b/i',      // Nested SELECT
-            '/\bFROM\b/i',        // FROM keyword
-            '/\bJOIN\b/i',        // JOIN keyword
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $expression)) {
-                return false;
-            }
-        }
-
-        // Validate that parentheses are balanced
-        if (!$this->are_parentheses_balanced($expression)) {
-            return false;
-        }
-
-        // Check length to prevent buffer overflow
-        if (strlen($expression) > 500) {
-            return false;
-        }
-
-        // Validate that expression contains only allowed column names and operators
+        $extra_patterns = ['/\bSELECT\b/i', '/\bFROM\b/i', '/\bJOIN\b/i'];
+        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/', $extra_patterns)) return false;
+        // Validate tokens
         $tokens = preg_split('/[\s\(\)\+\-\*\/,<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
         foreach ($tokens as $token) {
-            // Skip numeric values
-            if (is_numeric($token)) {
-                continue;
-            }
-
-            // Skip common SQL functions and conditional keywords
-            $allowed_functions = [
-                'COALESCE',
-                'IFNULL',
-                'IF',
-                'NULLIF',
-                'CASE',
-                'WHEN',
-                'THEN',
-                'ELSE',
-                'END',
-                'SUM',
-                'AVG',
-                'COUNT',
-                'MIN',
-                'MAX',
-                'ROUND',
-                'FLOOR',
-                'CEIL',
-                'ABS',
-                'CONCAT',
-                'SUBSTRING',
-                'LENGTH',
-                'DATE',
-                'NOW',
-                'CURDATE',
-                'CURTIME',
-                'YEAR',
-                'MONTH',
-                'DAY',
-                'AND',
-                'OR',
-                'NOT',
-                'IS',
-                'NULL',
-                'AS',
-                'DISTINCT'
-            ];
-            if (in_array(strtoupper($token), $allowed_functions)) {
-                continue;
-            }
-
-            // Check if it's a valid column name (including backtick-wrapped names)
+            if (is_numeric($token) || $this->is_allowed_sql_function($token)) continue;
             $cleaned_token = str_replace('`', '', $token);
-            if (!$this->is_valid_column_name($cleaned_token)) {
-                return false;
-            }
+            if (!$this->is_valid_column_name($cleaned_token)) return false;
         }
-
         return true;
     }
 
@@ -285,93 +262,16 @@ trait QueryValidationTrait
      */
     protected function is_valid_calculation_expression($expression)
     {
-        // Check if expression is string and not empty
-        if (!is_string($expression) || empty($expression)) {
-            return false;
-        }
-
-        // Allow more extensive pattern for calculation expressions
-        $allowed_pattern = '/^[\w\s\(\)\+\-\*\/\.,`%<>=]+$/';
-
-        if (!preg_match($allowed_pattern, $expression)) {
-            return false;
-        }
-
-        // Block dangerous SQL patterns but allow more functions for calculations
-        $dangerous_patterns = [
-            '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
-            '/[\'";]/',           // Quotes and semicolons
-            '/--/',               // SQL comments
-            '/\/\*/',             // Multi-line comment start
-            '/\*\//',             // Multi-line comment end
-            '/\|\|/',             // String concatenation
-            '/&&/',               // Logical AND
-            '/\bxp_/',            // Extended stored procedures
-            '/\bsp_/',            // Stored procedures
-            '/\bINTO\b/i',        // INTO keyword
-            '/\bVALUES\b/i',      // VALUES keyword
-        ];
-
-        foreach ($dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $expression)) {
-                return false;
-            }
-        }
-
-        // Validate that parentheses are balanced
-        if (!$this->are_parentheses_balanced($expression)) {
-            return false;
-        }
-
-        // Check length to prevent buffer overflow
-        if (strlen($expression) > 500) {
-            return false;
-        }
-
-        // Validate tokens - allow aggregate functions and mathematical operations
+        $extra_patterns = ['/\bINTO\b/i', '/\bVALUES\b/i'];
+        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`%<>=]+$/', $extra_patterns)) return false;
+        // Validate tokens
         $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
         foreach ($tokens as $token) {
-            // Skip numeric values
-            if (is_numeric($token)) {
-                continue;
-            }
-
-            // Allow aggregate functions
-            $allowed_aggregates = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
-            if (in_array(strtoupper($token), $allowed_aggregates)) {
-                continue;
-            }
-
-            // Allow date functions
-            $allowed_date_functions = ['DATEDIFF', 'TIMESTAMPDIFF', 'DATE', 'NOW', 'CURDATE', 'YEAR', 'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND'];
-            if (in_array(strtoupper($token), $allowed_date_functions)) {
-                continue;
-            }
-
-            // Allow mathematical functions
-            $allowed_math_functions = ['ROUND', 'FLOOR', 'CEIL', 'ABS', 'POW', 'SQRT', 'MOD'];
-            if (in_array(strtoupper($token), $allowed_math_functions)) {
-                continue;
-            }
-
-            // Allow conditional functions
-            $allowed_conditional = ['CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'IF', 'IFNULL', 'COALESCE', 'NULLIF'];
-            if (in_array(strtoupper($token), $allowed_conditional)) {
-                continue;
-            }
-
-            // Allow comparison operators
-            $allowed_operators = ['AND', 'OR', 'NOT', 'IS', 'NULL', 'TRUE', 'FALSE'];
-            if (in_array(strtoupper($token), $allowed_operators)) {
-                continue;
-            }
-
-            // Check if it's a valid column name (also allows table.column format)
-            if (!$this->is_valid_column_name($token)) {
-                return false;
-            }
+            if (is_numeric($token) || $this->is_allowed_sql_function($token)) continue;
+            // Also allow TRUE/FALSE as boolean literals
+            if (in_array(strtoupper($token), ['TRUE', 'FALSE', 'DISTINCT', 'HOUR', 'MINUTE', 'SECOND', 'CURDATE', 'CURTIME', 'POW', 'SQRT', 'MOD'])) continue;
+            if (!$this->is_valid_column_name($token)) return false;
         }
-
         return true;
     }
 
@@ -392,9 +292,7 @@ trait QueryValidationTrait
             } elseif ($expression[$i] === ')') {
                 $count--;
                 // If we have more closing than opening, it's unbalanced
-                if ($count < 0) {
-                    return false;
-                }
+                if ($count < 0) return false;
             }
         }
 
@@ -445,31 +343,43 @@ trait QueryValidationTrait
      *
      * @param string|array $keys Key(s) to process
      * @param string $key_type Type of key for error message ('local key', 'foreign key', etc.)
+     * @param bool $extract_from_dot Whether to extract key name from dot notation (e.g., 'table.column' → 'column')
      * @return array Processed keys
      * @throws InvalidArgumentException
      */
-    protected function process_keys($keys, $key_type = 'key')
+    protected function process_keys($keys, $key_type = 'key', $extract_from_dot = true)
     {
         $processed = [];
         $keys_array = is_array($keys) ? $keys : [$keys];
-
         foreach ($keys_array as $key) {
-            // Extract key name from dot notation if present
-            if (strpos($key, '.') !== false) {
+            $key_name = $key;
+            // Extract key name from dot notation if present and enabled
+            if ($extract_from_dot && strpos($key, '.') !== false) {
                 $parts = explode('.', $key);
                 $key_name = end($parts);
-            } else {
-                $key_name = $key;
             }
-
             if (!$this->is_valid_column_name($key_name)) {
                 throw new InvalidArgumentException("Invalid {$key_type}: {$key}. Keys can only contain alphanumeric characters, underscores, and dots.");
             }
-
             $processed[] = $key_name;
         }
-
         return $processed;
+    }
+
+    /**
+     * Validate that two key arrays have matching counts
+     *
+     * @param array $keys1 First key array
+     * @param array $keys2 Second key array
+     * @param string $message Error message
+     * @return void
+     * @throws InvalidArgumentException
+     */
+    protected function validate_key_count_match($keys1, $keys2, $message = 'Number of foreign keys must match number of local keys')
+    {
+        if (count($keys1) !== count($keys2)) {
+            throw new InvalidArgumentException($message);
+        }
     }
 }
 
@@ -817,33 +727,9 @@ class NestedQueryBuilder
             $alias = $relation;
         }
 
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (strpos($lk, '.') !== false) {
-                $parts = explode('.', $lk);
-                $processed_local_keys[] = end($parts);
-            } else {
-                $processed_local_keys[] = $lk;
-            }
-        }
-
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (strpos($fk, '.') !== false) {
-                $parts = explode('.', $fk);
-                $processed_foreign_keys[] = end($parts);
-            } else {
-                $processed_foreign_keys[] = $fk;
-            }
-        }
-
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Number of foreign keys must match number of local keys');
-        }
+        $processed_local_keys = $this->process_keys($localKey, 'local key');
+        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key');
+        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys);
 
         $this->with_relations[] = [
             'relation' => $relation_name,
@@ -1571,6 +1457,42 @@ class NestedQueryBuilder
     }
 
     /**
+     * Internal helper for WHERE EXISTS/NOT EXISTS relation conditions
+     *
+     * @param string $condition_type 'AND' or 'OR'
+     * @param string $exists_type 'EXISTS' or 'NOT EXISTS'
+     * @param string $relation Target table name
+     * @param string|array $foreignKey Foreign key(s)
+     * @param string|array $localKey Local key(s)
+     * @param callable|null $callback Optional callback
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_where_exists_relation_internal($condition_type, $exists_type, $relation, $foreignKey, $localKey, $callback = null)
+    {
+        $table_name = $this->extract_table_name($relation);
+
+        if (!$this->is_valid_table_name($table_name)) {
+            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
+        }
+
+        $processed_local_keys = $this->process_keys($localKey, 'local key column name', false);
+        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key column name', false);
+        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys, 'Foreign keys and local keys count must match');
+
+        $this->pending_where_exists[] = [
+            'type' => $condition_type,
+            'exists_type' => $exists_type,
+            'relation' => $relation,
+            'foreign_keys' => $processed_foreign_keys,
+            'local_keys' => $processed_local_keys,
+            'callback' => $callback
+        ];
+
+        return $this;
+    }
+
+    /**
      * Add WHERE EXISTS condition with relation support (simplified version)
      * 
      * This method provides a simplified interface for WHERE EXISTS queries
@@ -1598,52 +1520,7 @@ class NestedQueryBuilder
      */
     public function where_exists_relation($relation, $foreignKey, $localKey, $callback = null)
     {
-        // Extract table name without alias for validation
-        $table_name = $this->extract_table_name($relation);
-
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key column name: {$lk}");
-            }
-            $processed_local_keys[] = $lk;
-        }
-
-        // Process foreign keys  
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key column name: {$fk}");
-            }
-            $processed_foreign_keys[] = $fk;
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Foreign keys and local keys count must match');
-        }
-
-        // Store as pending operation to be processed later
-        $this->pending_where_exists[] = [
-            'type' => 'AND',
-            'exists_type' => 'EXISTS',
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        return $this;
+        return $this->add_where_exists_relation_internal('AND', 'EXISTS', $relation, $foreignKey, $localKey, $callback);
     }
 
     /**
@@ -1664,52 +1541,7 @@ class NestedQueryBuilder
      */
     public function or_where_exists_relation($relation, $foreignKey, $localKey, $callback = null)
     {
-        // Extract table name without alias for validation
-        $table_name = $this->extract_table_name($relation);
-
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key column name: {$lk}");
-            }
-            $processed_local_keys[] = $lk;
-        }
-
-        // Process foreign keys  
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key column name: {$fk}");
-            }
-            $processed_foreign_keys[] = $fk;
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Foreign keys and local keys count must match');
-        }
-
-        // Store as pending operation to be processed later
-        $this->pending_where_exists[] = [
-            'type' => 'OR',
-            'exists_type' => 'EXISTS',
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        return $this;
+        return $this->add_where_exists_relation_internal('OR', 'EXISTS', $relation, $foreignKey, $localKey, $callback);
     }
 
     /**
@@ -1728,52 +1560,7 @@ class NestedQueryBuilder
      */
     public function where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null)
     {
-        // Extract table name without alias for validation
-        $table_name = $this->extract_table_name($relation);
-
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key column name: {$lk}");
-            }
-            $processed_local_keys[] = $lk;
-        }
-
-        // Process foreign keys  
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key column name: {$fk}");
-            }
-            $processed_foreign_keys[] = $fk;
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Foreign keys and local keys count must match');
-        }
-
-        // Store as pending operation to be processed later
-        $this->pending_where_exists[] = [
-            'type' => 'AND',
-            'exists_type' => 'NOT EXISTS',
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        return $this;
+        return $this->add_where_exists_relation_internal('AND', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
     }
 
     /**
@@ -1796,52 +1583,7 @@ class NestedQueryBuilder
      */
     public function or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null)
     {
-        // Extract table name without alias for validation
-        $table_name = $this->extract_table_name($relation);
-
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key column name: {$lk}");
-            }
-            $processed_local_keys[] = $lk;
-        }
-
-        // Process foreign keys  
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key column name: {$fk}");
-            }
-            $processed_foreign_keys[] = $fk;
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Foreign keys and local keys count must match');
-        }
-
-        // Store as pending operation to be processed later
-        $this->pending_where_exists[] = [
-            'type' => 'OR',
-            'exists_type' => 'NOT EXISTS',
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        return $this;
+        return $this->add_where_exists_relation_internal('OR', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
     }
 }
 
@@ -2435,6 +2177,74 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Internal helper for WHERE EXISTS/NOT EXISTS relation conditions
+     *
+     * @param string $condition_type 'AND' or 'OR'
+     * @param string $exists_type 'EXISTS' or 'NOT EXISTS'
+     * @param string $relation Target table name
+     * @param string|array $foreignKey Foreign key(s)
+     * @param string|array $localKey Local key(s)
+     * @param callable|null $callback Optional callback
+     * @param bool $disable_pending_process If true, execute immediately for OR conditions
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_where_exists_relation_internal($condition_type, $exists_type, $relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
+    {
+        $table_name = $this->extract_table_name($relation);
+
+        if (!$this->is_valid_table_name($table_name)) {
+            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
+        }
+
+        $processed_local_keys = $this->process_keys($localKey, 'local key column name', false);
+        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key column name', false);
+        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys, 'Foreign keys and local keys count must match');
+
+        // Handle immediate execution for OR conditions when disable_pending_process is true
+        if ($disable_pending_process && $condition_type === 'OR') {
+            $extract_table_or_alias = function ($table_string) {
+                return $this->extract_table_or_alias($table_string);
+            };
+
+            $exists_method = $exists_type === 'EXISTS' ? 'or_where_exists' : 'or_where_not_exists';
+
+            return $this->$exists_method(function ($sub) use ($relation, $processed_foreign_keys, $processed_local_keys, $callback, $extract_table_or_alias) {
+                $sub->select('1')
+                    ->from($relation);
+
+                for ($i = 0; $i < count($processed_foreign_keys); $i++) {
+                    $fk = $processed_foreign_keys[$i];
+                    $lk = $processed_local_keys[$i];
+                    $relation_alias = $extract_table_or_alias($relation);
+                    $parent_ref = $lk;
+                    $sub->where("{$relation_alias}.{$fk} = {$parent_ref}", null, false);
+                }
+
+                if ($callback && is_callable($callback)) $callback($sub);
+            });
+        }
+
+        // Create pending operation data
+        $pending_item = [
+            'type' => $condition_type,
+            'exists_type' => $exists_type,
+            'relation' => $relation,
+            'foreign_keys' => $processed_foreign_keys,
+            'local_keys' => $processed_local_keys,
+            'callback' => $callback
+        ];
+
+        // Add to queue for proper grouping
+        $this->pending_where_queue[] = [
+            'type' => 'where_exists',
+            'data' => $pending_item
+        ];
+
+        return $this;
+    }
+
+    /**
      * Add WHERE EXISTS condition with relation support (simplified version)
      * 
      * This method provides a simplified interface for WHERE EXISTS queries
@@ -2469,58 +2279,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_exists_relation($relation, $foreignKey, $localKey, $callback = null)
     {
-        // Extract table name without alias for validation
-        $table_name = $this->extract_table_name($relation);
-
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key column name: {$lk}");
-            }
-            $processed_local_keys[] = $lk;
-        }
-
-        // Process foreign keys  
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key column name: {$fk}");
-            }
-            $processed_foreign_keys[] = $fk;
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Foreign keys and local keys count must match');
-        }
-
-        // Create pending operation data
-        $pending_item = [
-            'type' => 'AND',
-            'exists_type' => 'EXISTS',
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        // Add to queue for proper grouping
-        $this->pending_where_queue[] = [
-            'type' => 'where_exists',
-            'data' => $pending_item
-        ];
-
-        return $this;
+        return $this->add_where_exists_relation_internal('AND', 'EXISTS', $relation, $foreignKey, $localKey, $callback);
     }
 
     /**
@@ -2536,93 +2295,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @param string|array $foreignKey Foreign key(s) in the target table
      * @param string|array $localKey Local key(s) in the parent table  
      * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
+     * @param bool $disable_pending_process If true, execute immediately instead of queueing
      * @return $this
      * @throws InvalidArgumentException
      */
     public function or_where_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
     {
-        // Extract table name without alias for validation
-        $table_name = $this->extract_table_name($relation);
-
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key column name: {$lk}");
-            }
-            $processed_local_keys[] = $lk;
-        }
-
-        // Process foreign keys  
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key column name: {$fk}");
-            }
-            $processed_foreign_keys[] = $fk;
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Foreign keys and local keys count must match');
-        }
-
-        // Check if we're inside a group context by checking _group_depth
-        // If in group, execute immediately; otherwise store as pending
-        if ($disable_pending_process) {
-            $extract_table_or_alias = function ($table_string) {
-                return $this->extract_table_or_alias($table_string);
-            };
-
-            return $this->or_where_exists(function ($sub) use ($relation, $processed_foreign_keys, $processed_local_keys, $callback, $extract_table_or_alias) {
-                $sub->select('1')
-                    ->from($relation);
-
-                // Build join conditions
-                for ($i = 0; $i < count($processed_foreign_keys); $i++) {
-                    $fk = $processed_foreign_keys[$i];
-                    $lk = $processed_local_keys[$i];
-
-                    // Extract alias from relation for WHERE condition
-                    $relation_alias = $extract_table_or_alias($relation);
-
-                    // Handle parent table reference
-                    $parent_ref = $lk;
-
-                    $sub->where("{$relation_alias}.{$fk} = {$parent_ref}", null, false);
-                }
-
-                // Execute callback if provided
-                if ($callback && is_callable($callback)) $callback($sub);
-            });
-        }
-
-        // Create pending operation data
-        $pending_item = [
-            'type' => 'OR',
-            'exists_type' => 'EXISTS',
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        // Add to queue for proper grouping
-        $this->pending_where_queue[] = [
-            'type' => 'where_exists',
-            'data' => $pending_item
-        ];
-
-        return $this;
+        return $this->add_where_exists_relation_internal('OR', 'EXISTS', $relation, $foreignKey, $localKey, $callback, $disable_pending_process);
     }
 
     /**
@@ -2641,58 +2320,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null)
     {
-        // Extract table name without alias for validation
-        $table_name = $this->extract_table_name($relation);
-
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key column name: {$lk}");
-            }
-            $processed_local_keys[] = $lk;
-        }
-
-        // Process foreign keys  
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key column name: {$fk}");
-            }
-            $processed_foreign_keys[] = $fk;
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Foreign keys and local keys count must match');
-        }
-
-        // Create pending operation data
-        $pending_item = [
-            'type' => 'AND',
-            'exists_type' => 'NOT EXISTS',
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        // Add to queue for proper grouping
-        $this->pending_where_queue[] = [
-            'type' => 'where_exists',
-            'data' => $pending_item
-        ];
-
-        return $this;
+        return $this->add_where_exists_relation_internal('AND', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
     }
 
     /**
@@ -2710,93 +2338,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @param string|array $foreignKey Foreign key(s) in the target table
      * @param string|array $localKey Local key(s) in the parent table  
      * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
+     * @param bool $disable_pending_process If true, execute immediately instead of queueing
      * @return $this
      * @throws InvalidArgumentException
      */
     public function or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
     {
-        // Extract table name without alias for validation
-        $table_name = $this->extract_table_name($relation);
-
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key column name: {$lk}");
-            }
-            $processed_local_keys[] = $lk;
-        }
-
-        // Process foreign keys  
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key column name: {$fk}");
-            }
-            $processed_foreign_keys[] = $fk;
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Foreign keys and local keys count must match');
-        }
-
-        // Check if we're inside a group context by checking _group_depth
-        // If in group, execute immediately; otherwise store as pending
-        if ($disable_pending_process) {
-            $extract_table_or_alias = function ($table_string) {
-                return $this->extract_table_or_alias($table_string);
-            };
-
-            return $this->or_where_not_exists(function ($sub) use ($relation, $processed_foreign_keys, $processed_local_keys, $callback, $extract_table_or_alias) {
-                $sub->select('1')
-                    ->from($relation);
-
-                // Build join conditions
-                for ($i = 0; $i < count($processed_foreign_keys); $i++) {
-                    $fk = $processed_foreign_keys[$i];
-                    $lk = $processed_local_keys[$i];
-
-                    // Extract alias from relation for WHERE condition
-                    $relation_alias = $extract_table_or_alias($relation);
-
-                    // Handle parent table reference
-                    $parent_ref = $lk;
-
-                    $sub->where("{$relation_alias}.{$fk} = {$parent_ref}", null, false);
-                }
-
-                // Execute callback if provided
-                if ($callback && is_callable($callback)) $callback($sub);
-            });
-        }
-
-        // Create pending operation data
-        $pending_item = [
-            'type' => 'OR',
-            'exists_type' => 'NOT EXISTS',
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        // Add to queue for proper grouping
-        $this->pending_where_queue[] = [
-            'type' => 'where_exists',
-            'data' => $pending_item
-        ];
-
-        return $this;
+        return $this->add_where_exists_relation_internal('OR', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback, $disable_pending_process);
     }
 
     /**
@@ -2830,47 +2378,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             throw new InvalidArgumentException("Invalid relation name: {$relation}. Only alphanumeric characters and underscores are allowed.");
         }
 
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            // VALIDASI KEAMANAN: Validasi local key
-            if (strpos($lk, '.') !== false) {
-                $parts = explode('.', $lk);
-                $key_name = end($parts);
-            } else {
-                $key_name = $lk;
-            }
-
-            if (!$this->is_valid_column_name($key_name)) {
-                throw new InvalidArgumentException("Invalid local key: {$lk}. Only alphanumeric characters and underscores are allowed.");
-            }
-
-            $processed_local_keys[] = $key_name;
-        }
-
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            // VALIDASI KEAMANAN: Validasi foreign key
-            if (strpos($fk, '.') !== false) {
-                $parts = explode('.', $fk);
-                $key_name = end($parts);
-            } else {
-                $key_name = $fk;
-            }
-
-            if (!$this->is_valid_column_name($key_name)) {
-                throw new InvalidArgumentException("Invalid foreign key: {$fk}. Only alphanumeric characters and underscores are allowed.");
-            }
-
-            $processed_foreign_keys[] = $key_name;
-        }
-
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Number of foreign keys must match number of local keys');
-        }
+        $processed_local_keys = $this->process_keys($localKey, 'local key');
+        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key');
+        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys);
 
         // VALIDASI KEAMANAN: Validasi operator
         $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
@@ -2931,29 +2441,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_where_has($relation, $foreignKey, $localKey, $callback = null, $operator = '>=', $count = 1)
     {
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            if (strpos($lk, '.') !== false) {
-                $parts = explode('.', $lk);
-                $processed_local_keys[] = end($parts);
-            } else {
-                $processed_local_keys[] = $lk;
-            }
-        }
-
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            if (strpos($fk, '.') !== false) {
-                $parts = explode('.', $fk);
-                $processed_foreign_keys[] = end($parts);
-            } else {
-                $processed_foreign_keys[] = $fk;
-            }
-        }
+        $processed_local_keys = $this->process_keys($localKey, 'local key');
+        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key');
 
         $this->pending_where_has[] = [
             'relation' => $relation,
@@ -3353,47 +2842,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             throw new InvalidArgumentException("Invalid relation name: {$relation_name}. Only alphanumeric characters and underscores are allowed.");
         }
 
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-
-        foreach ($local_keys_array as $lk) {
-            // VALIDASI KEAMANAN: Validasi local key
-            if (strpos($lk, '.') !== false) {
-                $parts = explode('.', $lk);
-                $key_name = end($parts);
-            } else {
-                $key_name = $lk;
-            }
-
-            if (!$this->is_valid_column_name($key_name)) {
-                throw new InvalidArgumentException("Invalid local key: {$lk}. Only alphanumeric characters and underscores are allowed.");
-            }
-
-            $processed_local_keys[] = $key_name;
-        }
-
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-
-        foreach ($foreign_keys_array as $fk) {
-            // VALIDASI KEAMANAN: Validasi foreign key
-            if (strpos($fk, '.') !== false) {
-                $parts = explode('.', $fk);
-                $key_name = end($parts);
-            } else {
-                $key_name = $fk;
-            }
-
-            if (!$this->is_valid_column_name($key_name)) {
-                throw new InvalidArgumentException("Invalid foreign key: {$fk}. Only alphanumeric characters and underscores are allowed.");
-            }
-
-            $processed_foreign_keys[] = $key_name;
-        }
-
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Number of foreign keys must match number of local keys');
-        }
+        $processed_local_keys = $this->process_keys($localKey, 'local key');
+        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key');
+        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys);
 
         $this->with_relations[] = [
             'relation' => $relation_name,
