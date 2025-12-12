@@ -1735,6 +1735,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function from($from)
     {
+        // Set temp table name for pending where_exists_relation processing
+        if (is_string($from)) {
+            $this->_temp_table_name = $from;
+        } elseif (is_array($from) && count($from) > 0) {
+            $this->_temp_table_name = reset($from);
+        }
         return parent::from($from);
     }
 
