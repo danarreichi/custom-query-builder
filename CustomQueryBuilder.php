@@ -1820,8 +1820,37 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         if ($condition) {
             $callback($this, $condition);
+            
+            // Process pending where_exists if we're NOT inside a group context
+            // If we're inside a group, let the group() method handle it
+            if ($this->_in_group_context === 0) {
+                // Try to get parent table from qb_from if _temp_table_name is not set
+                $parent_table = $this->_temp_table_name;
+                if (empty($parent_table) && !empty($this->qb_from)) {
+                    $parent_table = $this->qb_from[0];
+                }
+                
+                // Process queue if we have pending operations and not in group context
+                if (!empty($this->pending_where_queue)) {
+                    $this->process_pending_where_queue($parent_table);
+                }
+            }
         } else {
-            if ($default) $default($this, $condition);
+            if ($default) {
+                $default($this, $condition);
+                
+                // Same processing for default callback
+                if ($this->_in_group_context === 0) {
+                    $parent_table = $this->_temp_table_name;
+                    if (empty($parent_table) && !empty($this->qb_from)) {
+                        $parent_table = $this->qb_from[0];
+                    }
+                    
+                    if (!empty($this->pending_where_queue)) {
+                        $this->process_pending_where_queue($parent_table);
+                    }
+                }
+            }
         }
         return $this;
     }
@@ -3845,14 +3874,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         if (!empty($table)) $this->from($table);
 
-        $this->process_pending_where_has();
-        $this->process_pending_aggregates();
-
-        $parent_table = !empty($table) ? $table : $this->_temp_table_name;
-        if (!empty($parent_table)) {
-            $this->process_pending_where_exists($parent_table);
-        }
-
         $original_limit = $this->qb_limit;
         $original_offset = $this->qb_offset;
         $original_debug = $this->db_debug;
@@ -3916,6 +3937,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->qb_limit = $original_limit;
             $this->qb_offset = $original_offset;
             $this->db_debug = $original_debug;
+            $this->reset_query();
         }
 
         return $total_processed;
@@ -4055,6 +4077,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->qb_limit = $original_limit;
             $this->qb_offset = $original_offset;
             $this->db_debug = $original_debug;
+            $this->reset_query();
         }
 
         return $total_processed;
@@ -5441,12 +5464,41 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if ($this->trans_status() === false) {
             $this->trans_rollback();
 
+            // Capture error details sebelum hilang
+            $error = $this->error();
+            $last_query = $this->last_query();
+
+            // Get caller origin menggunakan backtrace
+            $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10);
+            $caller = null;
+            foreach ($backtrace as $trace) {
+                if (
+                    isset($trace['file']) &&
+                    strpos($trace['file'], 'CustomQueryBuilder.php') === false &&
+                    strpos($trace['file'], 'system' . DIRECTORY_SEPARATOR) === false &&
+                    strpos($trace['file'], 'DB_query_builder.php') === false
+                ) {
+                    $caller = $trace;
+                    break;
+                }
+            }
+
+            // Build detailed error message
+            $error_details = sprintf(
+                "Transaction failed - Code: %s | Message: %s | Query: %s | File: %s | Line: %d",
+                isset($error['code']) ? $error['code'] : 'N/A',
+                isset($error['message']) ? $error['message'] : 'Unknown error',
+                $last_query ? $last_query : 'N/A',
+                isset($caller['file']) ? $caller['file'] : 'unknown',
+                isset($caller['line']) ? $caller['line'] : 0
+            );
+
             if ($strict) {
-                throw new Exception('Database transaction failed. All changes have been rolled back.');
+                throw new Exception($error_details);
             }
 
             if (function_exists('log_message')) {
-                log_message('error', 'Database transaction failed');
+                log_message('error', $error_details);
             }
 
             return false;
