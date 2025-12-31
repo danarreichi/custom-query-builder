@@ -2270,11 +2270,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
             'callback' => $callback
         ];
 
-        // Add to queue for proper grouping
-        $this->pending_where_queue[] = [
-            'type' => 'where_exists',
-            'data' => $pending_item
-        ];
+        // If we're inside a group context, add to queue for proper grouping
+        // Otherwise, add to pending_where_exists to be processed before group
+        if ($this->_in_group_context > 0) {
+            $this->pending_where_queue[] = [
+                'type' => 'where_exists',
+                'data' => $pending_item
+            ];
+        } else {
+            $this->pending_where_exists[] = $pending_item;
+        }
 
         return $this;
     }
@@ -3830,8 +3835,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->with_relations = [];
 
         $result = parent::get_compiled_select('', $reset);
-
         if (!$reset) $this->with_relations = $original_relations;
+        if ($reset) $this->reset_query();
 
         return $result;
     }
