@@ -20,7 +20,7 @@ trait QueryValidationTrait
      */
     protected static $DANGEROUS_SQL_PATTERNS = [
         '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
-        '/[\'";-]/',        // Dash character blocked
+        '/[;]/',        // Dash character blocked
         '/--/',             // SQL comment pattern
         '/\/\*/',           // Multi-line comment start
         '/\*\//',           // Multi-line comment end
@@ -181,7 +181,7 @@ trait QueryValidationTrait
      */
     protected static $EXPRESSION_DANGEROUS_PATTERNS = [
         '/\b(INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|CREATE|ALTER|TRUNCATE)\b/i',
-        '/[\'";]/',           // Quotes and semicolons
+        '/[;]/',             // Quotes and semicolons
         '/--/',               // SQL comments
         '/\/\*/',             // Multi-line comment start
         '/\*\//',             // Multi-line comment end
@@ -262,14 +262,35 @@ trait QueryValidationTrait
      */
     protected function is_valid_calculation_expression($expression)
     {
-        $extra_patterns = ['/\bINTO\b/i', '/\bVALUES\b/i'];
-        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`%<>=]+$/', $extra_patterns)) return false;
-        // Validate tokens
-        $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
+        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`%<>=\'"]+$/')) return false;
+        
+        // Block dangerous SQL keywords (but allow CASE, WHEN, THEN, ELSE, END)
+        $dangerous_keywords = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'UNION', 'EXEC', 
+                            'EXECUTE', 'CREATE', 'ALTER', 'TRUNCATE', 'INTO', 'VALUES'];
+        foreach ($dangerous_keywords as $keyword) {
+            if (preg_match('/\b' . $keyword . '\b/i', $expression)) return false;
+        }
+        
+        // Remove quoted strings temporarily for token validation
+        $expression_without_strings = preg_replace('/"[^"]*"/', 'STRING_LITERAL', $expression);
+        $expression_without_strings = preg_replace("/'[^']*'/", 'STRING_LITERAL', $expression_without_strings);
+        
+        // Validate tokens (exclude string literals)
+        $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression_without_strings, -1, PREG_SPLIT_NO_EMPTY);
         foreach ($tokens as $token) {
-            if (is_numeric($token) || $this->is_allowed_sql_function($token)) continue;
-            // Also allow TRUE/FALSE as boolean literals
+            // Skip string literal placeholders
+            if ($token === 'STRING_LITERAL') continue;
+            
+            // Allow numbers
+            if (is_numeric($token)) continue;
+            
+            // Allow SQL functions
+            if ($this->is_allowed_sql_function($token)) continue;
+            
+            // Allow TRUE/FALSE and other safe keywords
             if (in_array(strtoupper($token), ['TRUE', 'FALSE', 'DISTINCT', 'HOUR', 'MINUTE', 'SECOND', 'CURDATE', 'CURTIME', 'POW', 'SQRT', 'MOD'])) continue;
+            
+            // Validate column names
             if (!$this->is_valid_column_name($token)) return false;
         }
         return true;
@@ -756,6 +777,10 @@ class NestedQueryBuilder
      */
     protected function add_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $is_custom_expression = false, $callback = null)
     {
+        if (is_callable($is_custom_expression)) {
+            $callback = $is_custom_expression;
+            $is_custom_expression = true;
+        }
         // Validate column if provided
         if ($column !== null) {
             $this->validate_column_or_expression($column, $is_custom_expression);
@@ -1124,13 +1149,14 @@ class NestedQueryBuilder
     protected function add_where_calculated($condition_type, $condition, $value)
     {
         // Parse condition string to extract alias and operator
-        $pattern = '/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|>|<|>=|<=|!=|<>)\s*$/';
+        // UPDATE REGEX to support BETWEEN
+        $pattern = '/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|>|<|>=|<=|!=|<>|BETWEEN|NOT\\s+BETWEEN)\s*$/i';
         if (!preg_match($pattern, trim($condition), $matches)) {
-            throw new InvalidArgumentException("Invalid condition format: '{$condition}'. Expected format: 'alias operator' (e.g., 'sales_price >', 'total_count >=')");
+            throw new InvalidArgumentException("Invalid condition format: '{$condition}'. Expected format: 'alias operator' (e.g., 'sales_price >', 'total_count >=', 'sales_price BETWEEN')");
         }
 
         $alias = $matches[1];
-        $operator = $matches[2];
+        $operator = trim($matches[2]); // Keep original case for BETWEEN
 
         // Find the aggregate configuration by alias
         $aggregate_config = null;
@@ -2971,6 +2997,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function add_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $is_custom_expression = false, $callback = null)
     {
+        if (is_callable($is_custom_expression)) {
+            $callback = $is_custom_expression;
+            $is_custom_expression = true;
+        }
         // Validate column if provided
         if ($column !== null) {
             $this->validate_column_or_expression($column, $is_custom_expression);
@@ -3378,13 +3408,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
     protected function add_where_calculated($condition_type, $condition, $value)
     {
         // Parse condition string to extract alias and operator
-        $pattern = '/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|>|<|>=|<=|!=|<>)\s*$/';
+        $pattern = '/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|>|<|>=|<=|!=|<>|BETWEEN|NOT\\s+BETWEEN)\s*$/i';
         if (!preg_match($pattern, trim($condition), $matches)) {
-            throw new InvalidArgumentException("Invalid condition format: '{$condition}'. Expected format: 'alias operator' (e.g., 'sales_price >', 'total_count >=')");
+            throw new InvalidArgumentException("Invalid condition format: '{$condition}'. Expected format: 'alias operator' (e.g., 'sales_price >', 'total_count >=', 'sales_price BETWEEN')");
         }
 
         $alias = $matches[1];
-        $operator = $matches[2];
+        $operator = trim($matches[2]); // Keep original case for BETWEEN
 
         // Find the aggregate configuration by alias
         $aggregate_config = null;
@@ -3454,7 +3484,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         // Validate operator
-        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>', 'BETWEEN', 'NOT BETWEEN'];
         if (!in_array($operator, $allowed_operators)) {
             throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
         }
@@ -3490,32 +3520,22 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $processed_foreign_keys = [];
         $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
         foreach ($foreign_keys_array as $fk) {
-            if (strpos($fk, '.') !== false) {
-                $parts = explode('.', $fk);
-                $key_name = end($parts);
-            } else {
-                $key_name = $fk;
-            }
-            if (!$this->is_valid_column_name($key_name)) {
+            // Don't extract - keep full identifier
+            if (!$this->is_valid_column_name($fk)) {
                 throw new InvalidArgumentException("Invalid foreign key: {$fk}. Only alphanumeric characters and underscores are allowed.");
             }
-            $processed_foreign_keys[] = $key_name;
+            $processed_foreign_keys[] = $fk;  // Keep as is
         }
 
         // Process local keys
         $processed_local_keys = [];
         $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
         foreach ($local_keys_array as $lk) {
-            if (strpos($lk, '.') !== false) {
-                $parts = explode('.', $lk);
-                $key_name = end($parts);
-            } else {
-                $key_name = $lk;
-            }
-            if (!$this->is_valid_column_name($key_name)) {
+            // Don't extract - keep full identifier
+            if (!$this->is_valid_column_name($lk)) {
                 throw new InvalidArgumentException("Invalid local key: {$lk}. Only alphanumeric characters and underscores are allowed.");
             }
-            $processed_local_keys[] = $key_name;
+            $processed_local_keys[] = $lk;  // Keep as is
         }
 
         // Validate key count match
@@ -3877,73 +3897,43 @@ class CustomQueryBuilder extends CI_DB_query_builder
             throw new InvalidArgumentException('Page size must be greater than 0');
         }
 
-        if (!empty($table)) $this->from($table);
-
-        $original_limit = $this->qb_limit;
-        $original_offset = $this->qb_offset;
-        $original_debug = $this->db_debug;
-
-        $this->db_debug = FALSE;
-
         $offset = 0;
         $page = 1;
         $total_processed = 0;
 
-        try {
-            do {
-                $chunk_query = clone $this;
+        do {
+            // Clone query untuk setiap chunk
+            $chunk_query = clone $this;
+            
+            // get() akan otomatis process semua pending operations
+            $chunk_result = $chunk_query->get($table, $page_size, $offset);
+            
+            $chunk_data = $chunk_result->result();
+            $chunk_count = count($chunk_data);
 
-                if (!empty($this->with_relations)) {
-                    $chunk_result = $chunk_query->get_with_eager_loading('', $page_size, $offset, null);
-                } else {
-                    $chunk_query->qb_limit = $page_size;
-                    $chunk_query->qb_offset = $offset;
+            if ($chunk_count === 0) break;
 
-                    $chunk_result = $chunk_query->get('');
+            // Execute callback
+            $continue = $callback($chunk_data, $page);
 
-                    $error = $chunk_query->error();
-                    if ($error['code'] !== 0) {
-                        $chunk_query->handle_database_error($error);
-                    }
-                }
+            if ($continue === false) break;
 
-                $chunk_data = $chunk_result->result();
-                $chunk_count = count($chunk_data);
+            $total_processed += $chunk_count;
+            $page++;
+            $offset += $page_size;
 
-                if ($chunk_count === 0) {
-                    unset($chunk_query, $chunk_result, $chunk_data);
-                    break;
-                }
+            // Cleanup untuk mencegah memory leak
+            unset($chunk_query, $chunk_result, $chunk_data);
 
-                $continue = $callback($chunk_data, $page);
+            // Garbage collection setiap 10 page
+            if ($page % 10 === 0 && function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
 
-                if ($continue === false) {
-                    unset($chunk_query, $chunk_result, $chunk_data);
-                    break;
-                }
+            // Stop jika chunk terakhir tidak penuh
+            if ($chunk_count < $page_size) break;
 
-                $total_processed += $chunk_count;
-                $page++;
-                $offset += $page_size;
-
-                unset($chunk_query, $chunk_result, $chunk_data);
-
-                if ($page % 10 === 0) {
-                    if (function_exists('gc_collect_cycles')) {
-                        gc_collect_cycles();
-                    }
-                }
-
-                if ($chunk_count < $page_size) {
-                    break;
-                }
-            } while (true);
-        } finally {
-            $this->qb_limit = $original_limit;
-            $this->qb_offset = $original_offset;
-            $this->db_debug = $original_debug;
-            $this->reset_query();
-        }
+        } while (true);
 
         return $total_processed;
     }
@@ -3988,105 +3978,65 @@ class CustomQueryBuilder extends CI_DB_query_builder
             throw new InvalidArgumentException('Page size must be greater than 0');
         }
 
-        if (!empty($table)) $this->from($table);
-
-        $this->process_pending_where_has();
-        $this->process_pending_aggregates();
-
-        $parent_table = !empty($table) ? $table : $this->_temp_table_name;
-        if (!empty($parent_table)) {
-            $this->process_pending_where_exists($parent_table);
-        }
-
-        $original_order_by = $this->qb_orderby;
-        $original_limit = $this->qb_limit;
-        $original_offset = $this->qb_offset;
-        $original_debug = $this->db_debug;
-
-        $this->db_debug = FALSE;
-
-        $this->qb_orderby = [];
-        $this->order_by($column, 'ASC');
-
         $last_id = 0;
         $page = 1;
         $total_processed = 0;
 
-        try {
-            do {
-                $chunk_query = clone $this;
+        do {
+            // Clone query dan tambahkan kondisi untuk ID
+            $chunk_query = clone $this;
+            
+            if ($last_id > 0) {
+                $chunk_query->where($column . ' >', $last_id);
+            }
+            
+            // Order by ID dan limit
+            $chunk_query->order_by($column, 'ASC');
+            
+            // get() akan otomatis process semua pending operations
+            $chunk_result = $chunk_query->get($table, $page_size);
+            
+            $chunk_data = $chunk_result->result();
+            $chunk_count = count($chunk_data);
 
-                if ($last_id > 0) {
-                    $chunk_query->where($column . ' >', $last_id);
-                }
+            if ($chunk_count === 0) break;
 
-                $chunk_query->qb_limit = $page_size;
-                $chunk_query->qb_offset = FALSE;
+            // Execute callback
+            $continue = $callback($chunk_data, $page);
 
-                if (!empty($this->with_relations)) {
-                    $chunk_result = $chunk_query->get_with_eager_loading('', $page_size, 0, null);
-                } else {
-                    $chunk_result = $chunk_query->get('');
+            if ($continue === false) break;
 
-                    $error = $chunk_query->error();
-                    if ($error['code'] !== 0) {
-                        $chunk_query->handle_database_error($error);
-                    }
-                }
-
-                $chunk_data = $chunk_result->result();
-                $chunk_count = count($chunk_data);
-
-                if ($chunk_count === 0) {
-                    unset($chunk_query, $chunk_result, $chunk_data);
-                    break;
-                }
-
-                $continue = $callback($chunk_data, $page);
-
-                if ($continue === false) {
-                    unset($chunk_query, $chunk_result, $chunk_data);
-                    break;
-                }
-
-                $last_record = end($chunk_data);
-                if (isset($last_record->$column)) {
-                    $last_id = $last_record->$column;
-                } else {
-                    $last_array = (array) $last_record;
-                    if (isset($last_array[$column])) {
-                        $last_id = $last_array[$column];
-                    } else {
-                        unset($chunk_query, $chunk_result, $chunk_data);
-                        throw new InvalidArgumentException("Column '{$column}' not found in result set");
-                    }
-                }
-
-                $total_processed += $chunk_count;
-                $page++;
-
-                unset($chunk_query, $chunk_result, $chunk_data);
-
-                if ($page % 10 === 0) {
-                    if (function_exists('gc_collect_cycles')) {
-                        gc_collect_cycles();
-                    }
-                }
-
-                if ($chunk_count < $page_size) {
-                    break;
-                }
-            } while (true);
-        } finally {
-            $this->qb_orderby = $original_order_by;
-            $this->qb_limit = $original_limit;
-            $this->qb_offset = $original_offset;
-            $this->db_debug = $original_debug;
-            $this->reset_query();
+            // Get last ID from chunk
+            $last_record = end($chunk_data);
+            if (isset($last_record->$column)) {
+            $last_id = $last_record->$column;
+        } else {
+            $last_array = (array) $last_record;
+            if (isset($last_array[$column])) {
+                $last_id = $last_array[$column];
+            } else {
+                throw new InvalidArgumentException("Column '{$column}' not found in result set");
+            }
         }
 
-        return $total_processed;
-    }
+        $total_processed += $chunk_count;
+        $page++;
+
+        // Cleanup untuk mencegah memory leak
+        unset($chunk_query, $chunk_result, $chunk_data);
+
+        // Garbage collection setiap 10 page
+        if ($page % 10 === 0 && function_exists('gc_collect_cycles')) {
+            gc_collect_cycles();
+        }
+
+        // Stop jika chunk terakhir tidak penuh
+        if ($chunk_count < $page_size) break;
+
+    } while (true);
+
+    return $total_processed;
+}
 
     /**
      * Handle database errors and display formatted error messages
@@ -4455,7 +4405,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $relation_table_name = $this->extract_table_or_alias($aggregate_config['relation']);
 
             // Generate subquery alias to avoid ambiguity
-            $subquery_alias = $relation_table_name . '_agg';
+            $has_existing_alias = (strpos($aggregate_config['relation'], ' ') !== false) || (stripos($aggregate_config['relation'], ' AS ') !== false);
+            $subquery_alias = ($has_existing_alias) ? $relation_table_name : $relation_table_name . '_agg';
 
             // Build aggregate function based on type
             $aggregate_function = '';
@@ -4572,10 +4523,19 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // Build the WHERE condition with subquery
             $compiled_subquery = $subquery->get_compiled_select();
             $operator = $aggregate_config['operator'];
-            $value = $this->escape($aggregate_config['value']);
-
-            // Use COALESCE to handle NULL results (when no matching rows)
-            $where_condition = "COALESCE(({$compiled_subquery}), 0) {$operator} {$value}";
+            $value = $aggregate_config['value'];
+            
+            // Handle BETWEEN operator specially
+            $operator_upper = strtoupper(trim($operator));
+            if (in_array($operator_upper, ['BETWEEN', 'NOT BETWEEN'])) {
+                $value1 = $this->escape($value[0]);
+                $value2 = $this->escape($value[1]);
+                $where_condition = "COALESCE(({$compiled_subquery}), 0) {$operator_upper} {$value1} AND {$value2}";
+            } else {
+                $escaped_value = $this->escape($value);
+                // Use COALESCE to handle NULL results (when no matching rows)
+                $where_condition = "COALESCE(({$compiled_subquery}), 0) {$operator} {$escaped_value}";
+            }
 
             // Add to WHERE clause based on condition type
             if ($aggregate_config['condition_type'] === 'OR') {
@@ -4998,14 +4958,22 @@ class CustomQueryBuilder extends CI_DB_query_builder
             });
         } else {
             $local_key = $local_keys[0];
-            $aliased_key = "_auto_rel_{$local_key}";
+            
+            // Extract actual column name from local_key (remove table prefix if exists)
+            $actual_column = $local_key;
+            if (strpos($local_key, '.') !== false) {
+                $parts = explode('.', $local_key);
+                $actual_column = end($parts);
+            }
+            
+            $aliased_key = "_auto_rel_{$actual_column}";
 
             $local_values = [];
             foreach ($data as $item) {
                 if (isset($item[$aliased_key])) {
                     $local_values[] = $item[$aliased_key];
-                } elseif (isset($item[$local_key])) {
-                    $local_values[] = $item[$local_key];
+                } elseif (isset($item[$actual_column])) {
+                    $local_values[] = $item[$actual_column];
                 } else {
                     $local_values[] = null;
                 }
@@ -5052,7 +5020,15 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
             $relation_query->group_end();
         } else {
-            $relation_query->where_in($foreign_keys[0], $local_values);
+            // Add table prefix to foreign key if not already present
+            $foreign_key = $foreign_keys[0];
+            if (strpos($foreign_key, '.') === false) {
+                // Extract relation table name (without alias if present)
+                $relation_table = $this->extract_table_name($config['relation']);
+                $foreign_key = $relation_table . '.' . $foreign_key;
+            }
+            
+            $relation_query->where_in($foreign_key, $local_values);
         }
 
         if (is_callable($config['callback'])) {
@@ -5082,7 +5058,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 }
                 $base_db->group_end();
             } else {
-                $base_db->where_in($foreign_keys[0], $local_values);
+                // Add table prefix to foreign key for callback query too
+                $foreign_key = $foreign_keys[0];
+                if (strpos($foreign_key, '.') === false) {
+                    $relation_table = $this->extract_table_name($config['relation']);
+                    $foreign_key = $relation_table . '.' . $foreign_key;
+                }
+                
+                $base_db->where_in($foreign_key, $local_values);
             }
 
             $relation_builder = new NestedQueryBuilder($base_db);
@@ -5174,6 +5157,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
                                 $aggregate_function = "MIN($column)";
                             }
                             break;
+                        case 'custom_calculation':
+                            $aggregate_function = $aggregate_config['column'];
+                            break;
                     }
 
                     // Use table alias in FROM clause for subquery
@@ -5243,7 +5229,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             foreach ($foreign_keys as $fk) {
-                $this->auto_include_foreign_key($relation_builder->db, $fk);
+                // Extract actual column name without table prefix for auto_include
+                $fk_column = $fk;
+                if (strpos($fk, '.') !== false) {
+                    $parts = explode('.', $fk);
+                    $fk_column = end($parts);
+                }
+                $this->auto_include_foreign_key($relation_builder->db, $fk_column);
             }
 
             $this->auto_include_nested_keys($relation_builder);
@@ -5261,7 +5253,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
         } else {
             foreach ($foreign_keys as $fk) {
-                $this->auto_include_foreign_key($relation_query, $fk);
+                // Extract actual column name for auto_include
+                $fk_column = $fk;
+                if (strpos($fk, '.') !== false) {
+                    $parts = explode('.', $fk);
+                    $fk_column = end($parts);
+                }
+                $this->auto_include_foreign_key($relation_query, $fk_column);
             }
 
             $relation_result = $relation_query->get();
@@ -5273,11 +5271,23 @@ class CustomQueryBuilder extends CI_DB_query_builder
             if (count($foreign_keys) > 1) {
                 $composite_key = [];
                 foreach ($foreign_keys as $fk) {
-                    $composite_key[] = isset($relation_item[$fk]) ? $relation_item[$fk] : null;
+                    // Extract actual column name for array access
+                    $fk_column = $fk;
+                    if (strpos($fk, '.') !== false) {
+                        $parts = explode('.', $fk);
+                        $fk_column = end($parts);
+                    }
+                    $composite_key[] = isset($relation_item[$fk_column]) ? $relation_item[$fk_column] : null;
                 }
                 $key = json_encode($composite_key);
             } else {
-                $key = isset($relation_item[$foreign_keys[0]]) ? $relation_item[$foreign_keys[0]] : null;
+                // Extract actual column name for array access
+                $fk_column = $foreign_keys[0];
+                if (strpos($fk_column, '.') !== false) {
+                    $parts = explode('.', $fk_column);
+                    $fk_column = end($parts);
+                }
+                $key = isset($relation_item[$fk_column]) ? $relation_item[$fk_column] : null;
             }
 
             if ($config['multiple']) {
@@ -5292,23 +5302,37 @@ class CustomQueryBuilder extends CI_DB_query_builder
             if (count($local_keys) > 1) {
                 $composite_key = [];
                 foreach ($local_keys as $lk) {
-                    $aliased_key = "_auto_rel_{$lk}";
+                    // Extract actual column name
+                    $lk_column = $lk;
+                    if (strpos($lk, '.') !== false) {
+                        $parts = explode('.', $lk);
+                        $lk_column = end($parts);
+                    }
+                    
+                    $aliased_key = "_auto_rel_{$lk_column}";
                     if (isset($item[$aliased_key])) {
                         $composite_key[] = $item[$aliased_key];
-                    } elseif (isset($item[$lk])) {
-                        $composite_key[] = $item[$lk];
+                    } elseif (isset($item[$lk_column])) {
+                        $composite_key[] = $item[$lk_column];
                     } else {
                         $composite_key[] = null;
                     }
                 }
                 $local_value = json_encode($composite_key);
             } else {
+                // Extract actual column name
                 $local_key = $local_keys[0];
-                $aliased_key = "_auto_rel_{$local_key}";
+                $lk_column = $local_key;
+                if (strpos($local_key, '.') !== false) {
+                    $parts = explode('.', $local_key);
+                    $lk_column = end($parts);
+                }
+                
+                $aliased_key = "_auto_rel_{$lk_column}";
                 if (isset($item[$aliased_key])) {
                     $local_value = $item[$aliased_key];
-                } elseif (isset($item[$local_key])) {
-                    $local_value = $item[$local_key];
+                } elseif (isset($item[$lk_column])) {
+                    $local_value = $item[$lk_column];
                 } else {
                     $local_value = null;
                 }
