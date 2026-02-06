@@ -374,7 +374,7 @@ trait QueryValidationTrait
         $keys_array = is_array($keys) ? $keys : [$keys];
         foreach ($keys_array as $key) {
             $key_name = $key;
-            // Extract key name from dot notation if present and enabled
+            // Extract key name from dot notation if present and enabled (for validation only)
             if ($extract_from_dot && strpos($key, '.') !== false) {
                 $parts = explode('.', $key);
                 $key_name = end($parts);
@@ -382,7 +382,8 @@ trait QueryValidationTrait
             if (!$this->is_valid_column_name($key_name)) {
                 throw new InvalidArgumentException("Invalid {$key_type}: {$key}. Keys can only contain alphanumeric characters, underscores, and dots.");
             }
-            $processed[] = $key_name;
+            // Preserve original key with table prefix
+            $processed[] = $key;
         }
         return $processed;
     }
@@ -4874,21 +4875,34 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         foreach ($required_keys as $key) {
-            //  TAMBAHAN VALIDASI KEAMANAN
+            // Extract column name for validation (remove table prefix if exists)
+            $key_for_validation = $key;
+            if (strpos($key, '.') !== false) {
+                $parts = explode('.', $key);
+                $key_for_validation = end($parts);
+            }
+            
             // Validasi column name untuk mencegah injection
-            if (!$this->is_valid_column_name($key)) {
+            if (!$this->is_valid_column_name($key_for_validation)) {
                 continue; // Skip jika tidak valid
             }
 
             // Check if key is already selected (including with alias format _auto_rel_key)
-            $auto_rel_key = '_auto_rel_' . $key;
+            $auto_rel_key = '_auto_rel_' . $key_for_validation;
 
-            if (!in_array($key, $selected_fields) && !in_array($auto_rel_key, $selected_fields)) {
-                // Use table alias if available
-                $table_name = $this->protect_identifiers($table_alias, true);
-                $column_name = $this->protect_identifiers($key, true);
-                $alias_name = $this->protect_identifiers($auto_rel_key, true);
-                $this->select("{$table_name}.{$column_name} AS {$alias_name}", false);
+            if (!in_array($key_for_validation, $selected_fields) && !in_array($auto_rel_key, $selected_fields)) {
+                // If key already has table prefix (e.g., 'member.member_type'), use it as-is
+                if (strpos($key, '.') !== false) {
+                    // Key already has table prefix, use it directly
+                    $alias_name = $this->protect_identifiers($auto_rel_key, true);
+                    $this->select("{$key} AS {$alias_name}", false);
+                } else {
+                    // Add table alias/name to key
+                    $table_name = $this->protect_identifiers($table_alias, true);
+                    $column_name = $this->protect_identifiers($key, true);
+                    $alias_name = $this->protect_identifiers($auto_rel_key, true);
+                    $this->select("{$table_name}.{$column_name} AS {$alias_name}", false);
+                }
             }
         }
     }
@@ -5478,22 +5492,51 @@ class CustomQueryBuilder extends CI_DB_query_builder
             restore_error_handler();
         }
 
+        // Handle PHP Exception yang tertangkap
         if ($exception !== null) {
             $this->trans_rollback();
-            if ($strict) throw $exception;
+
+            // Get caller origin menggunakan backtrace
+            $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10);
+            $caller = null;
+            foreach ($backtrace as $trace) {
+                if (
+                    isset($trace['file']) &&
+                    strpos($trace['file'], 'CustomQueryBuilder.php') === false &&
+                    strpos($trace['file'], 'system' . DIRECTORY_SEPARATOR) === false &&
+                    strpos($trace['file'], 'DB_query_builder.php') === false
+                ) {
+                    $caller = $trace;
+                    break;
+                }
+            }
+
+            // Build detailed error message untuk PHP exception
+            $error_details = sprintf(
+                "Transaction failed (PHP Exception) - Type: %s | Message: %s | File: %s | Line: %d | Origin: %s:%d",
+                get_class($exception),
+                $exception->getMessage(),
+                $exception->getFile(),
+                $exception->getLine(),
+                isset($caller['file']) ? $caller['file'] : 'unknown',
+                isset($caller['line']) ? $caller['line'] : 0
+            );
+
+            if ($strict) throw new Exception($error_details, 0, $exception);
 
             // Log error
             if (function_exists('log_message')) {
-                log_message('error', 'Transaction failed: ' . $exception->getMessage());
+                log_message('error', $error_details);
             }
 
             return false;
         }
 
+        // Handle database transaction failure
         if ($this->trans_status() === false) {
             $this->trans_rollback();
 
-            // Capture error details sebelum hilang
+            // Capture database error details
             $error = $this->error();
             $last_query = $this->last_query();
 
@@ -5512,9 +5555,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 }
             }
 
-            // Build detailed error message
+            // Build detailed error message untuk database error
             $error_details = sprintf(
-                "Transaction failed - Code: %s | Message: %s | Query: %s | File: %s | Line: %d",
+                "Transaction failed (Database Error) - Code: %s | Message: %s | Query: %s | File: %s | Line: %d",
                 isset($error['code']) ? $error['code'] : 'N/A',
                 isset($error['message']) ? $error['message'] : 'Unknown error',
                 $last_query ? $last_query : 'N/A',
