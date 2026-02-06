@@ -1,1302 +1,1365 @@
-# CustomQueryBuilder for CodeIgniter 3
+# CustomQueryBuilder Usage Documentation
 
-> 🚀 Advanced Query Builder untuk CodeIgniter 3 dengan fitur Eager Loading Relations, Advanced Aggregates, dan SQL Injection Prevention yang Komprehensif
+## Table of Contents
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![CodeIgniter](https://img.shields.io/badge/CodeIgniter-3.x-red)
-![PHP](https://img.shields.io/badge/PHP-7.0%2B-blue)
-
----
-
-## 📋 Table of Contents
-
-- [Fitur Utama](#fitur-utama)
-- [Persyaratan Sistem](#persyaratan-sistem)
-- [Instalasi](#instalasi)
-- [Konfigurasi](#konfigurasi)
-- [Panduan Penggunaan](#panduan-penggunaan)
-  - [Basic Query](#basic-query)
-  - [Conditional WHERE](#conditional-where)
-  - [Eager Loading Relations](#eager-loading-relations)
-  - [Aggregates & Calculations](#aggregates--calculations)
-  - [Advanced Features](#advanced-features)
-- [API Reference](#api-reference)
-- [Contoh Implementasi](#contoh-implementasi)
-- [Troubleshooting](#troubleshooting)
-- [Kontribusi](#kontribusi)
-- [Lisensi](#lisensi)
+1. [Installation](#installation)
+2. [Introduction](#introduction)
+3. [Basic Query Methods](#basic-query-methods)
+4. [Advanced WHERE Conditions](#advanced-where-conditions)
+5. [Eager Loading Relations](#eager-loading-relations)
+6. [Aggregate Functions](#aggregate-functions)
+7. [Complex Calculations](#complex-calculations)
+8. [WHERE EXISTS Queries](#where-exists-queries)
+9. [Conditional Queries](#conditional-queries)
+10. [Search and Filtering](#search-and-filtering)
+11. [Pagination with calc_rows()](#pagination-with-calc_rows)
+12. [Query Grouping](#query-grouping)
+13. [Security Features](#security-features)
+14. [Best Practices](#best-practices)
 
 ---
 
-## 🎯 Fitur Utama
+## Installation
 
-### ✅ Fitur Dasar
-- **Fluent Query Builder**: Interface berantai untuk query building yang elegan
-- **All CRUD Operations**: SELECT, INSERT, UPDATE, DELETE, UPSERT
-- **Advanced WHERE Conditions**: AND, OR, NOT, BETWEEN, IN, NULL checks
-- **Joins**: INNER, LEFT, RIGHT, CROSS joins dengan support table alias
-- **ORDER BY & GROUP BY**: Sorting, grouping, dan aggregation
-- **Limit & Offset**: Pagination support dengan SQL_CALC_FOUND_ROWS
+This guide walks you through installing CustomQueryBuilder into an existing CodeIgniter 3.x project.
 
-### ⭐ Fitur Premium
-- **Eager Loading Relations**: `with_one()`, `with_many()`, `with_count()`
-- **Advanced Aggregates**: `with_sum()`, `with_avg()`, `with_max()`, `with_min()`, `with_calculation()`
-- **Custom Expression Support**: Mathematical operations dan conditional expressions
-- **WHERE EXISTS/NOT EXISTS**: Simplified syntax dengan `where_exists_relation()`, `where_not_exists_relation()`
-- **WHERE HAS/DOESN'T HAVE**: Relationship existence checking dengan count conditions
-- **Complex Calculations**: Multi-aggregate calculations dengan `with_calculation()`
-- **Chunking**: Process large datasets dengan `chunk()` dan `chunk_by_id()`
+### Prerequisites
 
-### 🔒 Security Features
-- **SQL Injection Prevention**: Comprehensive validation untuk column names, table names, dan custom expressions
-- **Parameter Binding**: Automatic escaping untuk semua user inputs
-- **Expression Validation**: Whitelist untuk SQL functions dan operators
-- **Dangerous Pattern Detection**: Detection untuk SQL comments, union attacks, dan injection patterns
+- **CodeIgniter 3.x** installed and working
+- **PHP 5.6+** (recommended: PHP 7.0+)
+- Access to modify system core files
+- Database configured and operational
 
----
+### Installation Steps
 
-## 📦 Persyaratan Sistem
+#### Step 1: Copy CustomQueryBuilder File
+
+Copy the `CustomQueryBuilder.php` file to your CodeIgniter system core directory:
 
 ```
-PHP: >= 7.0. 0
-CodeIgniter: 3.x
-MySQL: 5.7+ (atau kompatibel)
+your-project/
+├── application/
+├── system/
+│   ├── core/
+│   │   ├── CustomQueryBuilder.php    ← Copy file here
+│   │   ├── CodeIgniter.php
+│   │   └── ...
+│   └── database/
+└── ...
 ```
 
----
+**File location:**
+- **Source:** `system/core/CustomQueryBuilder.php` (from this repository)
+- **Destination:** `your-project/system/core/CustomQueryBuilder.php`
 
-## 🔧 Instalasi
+#### Step 2: Modify Database Loader (DB.php)
 
-### Metode 1: Standard Installation (Recommended)
+Edit `system/database/DB.php` to load and extend CustomQueryBuilder instead of the default CI_DB_query_builder.
 
-#### Langkah 1: Download atau Clone Repository
+**File to edit:** `system/database/DB.php`
+
+**Find this code** (around line 154-163):
+
+```php
+require_once(BASEPATH.'database/DB_driver.php');
+
+if ( ! class_exists('CI_DB', FALSE))
+{
+    /**
+     * CI_DB
+     *
+     * Acts as an alias for both CI_DB_driver and CI_DB_query_builder.
+     *
+     * @see	CI_DB_query_builder
+     * @see	CI_DB_driver
+     */
+    class CI_DB extends CI_DB_query_builder {}
+}
+```
+
+**Replace with:**
+
+```php
+require_once(BASEPATH.'database/DB_driver.php');
+require_once(BASEPATH.'core/CustomQueryBuilder.php');
+
+if ( ! class_exists('CI_DB', FALSE))
+{
+    /**
+     * CI_DB
+     *
+     * Acts as an alias for both CI_DB_driver and CI_DB_query_builder.
+     *
+     * @see	CI_DB_query_builder
+     * @see	CI_DB_driver
+     */
+    class CI_DB extends CustomQueryBuilder {}
+}
+```
+
+**Key changes:**
+1. Added: `require_once(BASEPATH.'core/CustomQueryBuilder.php');`
+2. Changed: `class CI_DB extends CI_DB_query_builder {}` → `class CI_DB extends CustomQueryBuilder {}`
+
+#### Step 3: Clear Cache (if applicable)
+
+If your application uses caching or OPcache, clear it:
 
 ```bash
-# Menggunakan Git
-git clone https://github.com/danarreichi/custom-query-builder.git
+# OPcache
+php -r "opcache_reset();"
 
-# Atau download ZIP dari GitHub
+# Or restart your web server
+sudo service apache2 restart
+# or
+sudo service php-fpm restart
 ```
 
-#### Langkah 2: Copy File ke CodeIgniter
+#### Step 4: Verify Installation
 
-```bash
-# Copy library file ke CodeIgniter
-cp CustomQueryBuilder.php /path/to/your/ci3-project/application/libraries/
+Create a test controller or add to an existing one:
 
-# Struktur file:
-# application/
-# └── libraries/
-#     └── CustomQueryBuilder.php
-```
-
-#### Langkah 3: Autoload Library (Opsional)
-
-Edit `application/config/autoload.php`:
+**File:** `application/controllers/Test_custom_qb.php`
 
 ```php
-// OPTION 1: Autoload secara otomatis
-$autoload['libraries'] = array('database');
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
 
-// OPTION 2: Load manual di controller/model
-$this->load->library('CustomQueryBuilder');
-```
-
-#### Langkah 4: Konfigurasi Database
-
-Edit `application/config/database.php`:
-
-```php
-$db['default'] = array(
-    'dsn'   => '',
-    'hostname' => 'localhost',
-    'username' => 'root',
-    'password' => '',
-    'database' => 'your_database',
-    'dbdriver' => 'mysqli',
-    'dbprefix' => '',
-    'pconnect' => FALSE,
-    'db_debug' => TRUE,
-    'cache_on' => FALSE,
-    'cachedir' => '',
-    'char_set' => 'utf8',
-    'dbcollat' => 'utf8_general_ci',
-    'swap_pre' => '',
-    'encrypt' => FALSE,
-    'compress' => FALSE,
-    'stricton' => FALSE,
-    'failover' => array(),
-    'save_queries' => TRUE
-);
-```
-
----
-
-### Metode 2: Direct System Injection (Advanced)
-
-> ⚠️ Metode ini melakukan injeksi langsung ke dalam core system CodeIgniter.  Gunakan jika Anda ingin CustomQueryBuilder otomatis tersedia di seluruh aplikasi tanpa perlu memanggil library secara manual.
-
-#### Langkah 1: Download atau Clone Repository
-
-```bash
-# Menggunakan Git
-git clone https://github.com/danarreichi/custom-query-builder.git
-
-# Atau download ZIP dari GitHub
-```
-
-#### Langkah 2: Injeksi CustomQueryBuilder ke Core System
-
-Salin file `CustomQueryBuilder.php` ke direktori core CodeIgniter Anda:
-
-```bash
-# Contoh untuk Laragon:
-cp CustomQueryBuilder.php C:\laragon\www\your_project\system\core\CustomQueryBuilder.php
-
-# Atau untuk Linux/Mac:
-cp CustomQueryBuilder.php /path/to/your/ci3-project/system/core/CustomQueryBuilder.php
-
-# Struktur file setelah injeksi:
-# system/
-# └── core/
-#     └── CustomQueryBuilder.php
-```
-
-#### Langkah 3: Modifikasi File Database Core
-
-Buka file `system/database/DB.php` dan tambahkan require statement di bagian atas file (setelah namespace/class declarations):
-
-```php
-// Contoh: Di system/database/DB.php
-// Tambahkan di bagian paling atas sebelum class definitions
-
-require_once(__DIR__ . '/../core/CustomQueryBuilder.php');
-
-// Jika menggunakan custom query builder sebagai driver/extension,
-// pastikan CustomQueryBuilder di-load sebelum query builder standar
-```
-
-Kemudian, modifikasi bagian inisialisasi query builder agar menggunakan CustomQueryBuilder.  Cari bagian yang menginisialisasi query builder dan pastikan CustomQueryBuilder ter-inject:
-
-```php
-// Contoh (sesuaikan dengan struktur file DB.php Anda):
-// Ganti pemanggilan query builder dengan CustomQueryBuilder
-// Sehingga saat $this->db dipanggil di controller/model,
-// otomatis menggunakan CustomQueryBuilder
-```
-
-#### Langkah 4: Konfigurasi Database
-
-Edit `application/config/database.php` sesuai kebutuhan project Anda (sama seperti Metode 1):
-
-```php
-$db['default'] = array(
-    'hostname' => 'localhost',
-    'username' => 'root',
-    'password' => '',
-    'database' => 'your_database',
-    // ... konfigurasi lainnya
-);
-```
-
-#### Langkah 5: Verifikasi Instalasi
-
-Buat file test untuk memverifikasi bahwa CustomQueryBuilder sudah terintegrasi:
-
-```php
-<? php
-// Di controller Anda
-class Test_controller extends CI_Controller {
-    
+class Test_custom_qb extends CI_Controller 
+{
     public function index()
     {
-        // Test menggunakan CustomQueryBuilder methods
-        $users = $this->db->from('users')
-                          ->with_count('posts', 'user_id', 'id')
-                          ->get()
-                          ->result();
+        // Test basic eager loading
+        $users = $this->db->select(['id', 'name'])
+                          ->with_count('orders', 'user_id', 'id')
+                          ->limit(5)
+                          ->get('users');
         
-        var_dump($users);  // Jika bekerja, CustomQueryBuilder sudah ter-inject
+        if ($users->num_rows() > 0) {
+            echo '<h3>CustomQueryBuilder is working!</h3>';
+            echo '<pre>';
+            foreach ($users->result() as $user) {
+                echo "User: {$user->name}\n";
+                echo "Order Count: " . ($user->orders_count ?? 0) . "\n\n";
+            }
+            echo '</pre>';
+        } else {
+            echo '<h3>No users found, but CustomQueryBuilder is loaded!</h3>';
+        }
+        
+        // Test that with_one is available
+        if (method_exists($this->db, 'with_one')) {
+            echo '<p style="color: green;">✓ with_one() method available</p>';
+        }
+        
+        // Test that with_many is available
+        if (method_exists($this->db, 'with_many')) {
+            echo '<p style="color: green;">✓ with_many() method available</p>';
+        }
+        
+        // Test that calc_rows is available
+        if (method_exists($this->db, 'calc_rows')) {
+            echo '<p style="color: green;">✓ calc_rows() method available</p>';
+        }
     }
 }
+```
+
+Visit: `http://your-site.com/index.php/test_custom_qb`
+
+If you see the success messages, CustomQueryBuilder is installed correctly!
+
+### Alternative Verification (Without Database Data)
+
+If you don't have users or orders tables, use this simpler test:
+
+```php
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+class Test_custom_qb extends CI_Controller 
+{
+    public function index()
+    {
+        echo '<h2>CustomQueryBuilder Method Check</h2>';
+        
+        $methods = [
+            'with_one',
+            'with_many',
+            'with_count',
+            'with_sum',
+            'with_avg',
+            'with_calculation',
+            'where_exists',
+            'where_has',
+            'where_aggregate',
+            'calc_rows',
+            'search',
+            'when',
+            'latest',
+            'first'
+        ];
+        
+        echo '<ul>';
+        foreach ($methods as $method) {
+            if (method_exists($this->db, $method)) {
+                echo "<li style='color: green;'>✓ {$method}() - Available</li>";
+            } else {
+                echo "<li style='color: red;'>✗ {$method}() - NOT FOUND</li>";
+            }
+        }
+        echo '</ul>';
+        
+        // Check class inheritance
+        $db_class = get_class($this->db);
+        $parent_class = get_parent_class($this->db);
+        
+        echo '<h3>Class Information</h3>';
+        echo "<p>Database class: <strong>{$db_class}</strong></p>";
+        echo "<p>Parent class: <strong>{$parent_class}</strong></p>";
+        
+        if (strpos($parent_class, 'CustomQueryBuilder') !== false) {
+            echo '<p style="color: green; font-weight: bold;">✓ CustomQueryBuilder is properly extended!</p>';
+        } else {
+            echo '<p style="color: red; font-weight: bold;">✗ CustomQueryBuilder is NOT being used</p>';
+        }
+    }
+}
+```
+
+### Troubleshooting
+
+#### Error: "Class 'CustomQueryBuilder' not found"
+
+**Cause:** The CustomQueryBuilder.php file is not in the correct location or not properly required.
+
+**Solution:**
+1. Verify file exists at `system/core/CustomQueryBuilder.php`
+2. Check that you added the require line in `system/database/DB.php`:
+   ```php
+   require_once(BASEPATH.'core/CustomQueryBuilder.php');
+   ```
+3. Verify BASEPATH constant is defined (it should be by default)
+
+#### Error: "Call to undefined method CI_DB::with_one()"
+
+**Cause:** The CI_DB class is not extending CustomQueryBuilder.
+
+**Solution:**
+1. Check `system/database/DB.php` line where CI_DB class is defined
+2. Ensure it says: `class CI_DB extends CustomQueryBuilder {}`
+3. NOT: `class CI_DB extends CI_DB_query_builder {}`
+4. Clear OPcache/restart web server
+
+#### Methods Not Working After Installation
+
+**Solution:**
+1. Clear browser cache
+2. Clear OPcache: `php -r "opcache_reset();"`
+3. Restart web server
+4. Verify no syntax errors in CustomQueryBuilder.php
+
+#### Performance Issues
+
+**Note:** CustomQueryBuilder adds minimal overhead to standard queries. However:
+- Eager loading (`with_*`) methods may execute additional queries
+- Use `calc_rows()` only when needed for pagination
+- Profile queries using CodeIgniter's profiler:
+  ```php
+  $this->output->enable_profiler(TRUE);
+  ```
+
+### Migration Notes
+
+#### From Standard CI Query Builder
+
+CustomQueryBuilder is **100% backward compatible** with CodeIgniter's standard Query Builder. All existing queries will continue to work without modification:
+
+```php
+// These standard queries work exactly as before
+$this->db->select('*')
+         ->where('status', 1)
+         ->get('users');
+
+$this->db->insert('users', $data);
+$this->db->update('users', $data, ['id' => 1]);
+```
+
+You can gradually adopt new features:
+
+```php
+// Start using new features where they add value
+$users = $this->db->select(['id', 'name'])
+                  ->with_many('orders', 'user_id', 'id')  // New feature
+                  ->where('status', 1)                      // Standard CI
+                  ->get('users');                           // Standard CI
+```
+
+#### Upgrading CodeIgniter
+
+When upgrading CodeIgniter versions:
+1. Back up your modified `system/database/DB.php`
+2. After upgrade, reapply the modifications (Steps 2)
+3. Test thoroughly
+
+### System Requirements
+
+- **CodeIgniter:** 3.0.0 or higher (tested up to 3.1.13)
+- **PHP:** 5.6+ (recommended: 7.0+)
+- **MySQL:** 5.5+ or MariaDB 10.0+
+- **Memory:** No additional requirements beyond CodeIgniter defaults
+
+### File Checklist
+
+After installation, verify these files exist:
+
+```
+✓ system/core/CustomQueryBuilder.php          (New file - copied)
+✓ system/database/DB.php                      (Modified - extends CustomQueryBuilder)
+```
+
+### Next Steps
+
+Once installation is verified:
+1. Read the [Introduction](#introduction) section for an overview
+2. Try [Eager Loading Relations](#eager-loading-relations) for immediate benefits
+3. Explore [Aggregate Functions](#aggregate-functions) to reduce query counts
+4. Review [Security Features](#security-features) to understand SQL injection protection
+
+---
+
+## Introduction
+
+**CustomQueryBuilder** is an enhanced CodeIgniter 3.x Query Builder that extends the native `CI_DB_query_builder` with powerful features including:
+
+- **Eager loading relationships** (similar to Laravel's Eloquent)
+- **Advanced WHERE conditions** (WHERE EXISTS, WHERE HAS, etc.)
+- **Aggregate functions** with custom expressions
+- **Complex calculations** using mathematical operations
+- **SQL injection prevention** with comprehensive validation
+- **Chunking capabilities** for large datasets
+- **Enhanced search functionality**
+
+### Location
+- File: `system/core/CustomQueryBuilder.php`
+- Size: 5667 lines
+- Author: Danar Ardiwinanto
+- Version: 1.0.0
+
+### Accessing the Query Builder
+
+```php
+// In CodeIgniter controllers/models, use $this->db
+$users = $this->db->select('id, name, email')
+                  ->where('status', 1)
+                  ->get('users');
 ```
 
 ---
 
-### Perbedaan Metode 1 vs Metode 2
+## Basic Query Methods
 
-| Aspek | Metode 1 (Standard) | Metode 2 (Injection) |
-|-------|---------------------|----------------------|
-| Lokasi File | `application/libraries/` | `system/core/` |
-| Autoload | Manual atau via config | Otomatis |
-| Kompatibilitas | Lebih aman saat update CI | Rawan jika update CI |
-| Setup Complexity | Lebih sederhana | Lebih kompleks |
-| Best For | Production environments | Development/Custom projects |
+### Standard CodeIgniter Methods
 
----
-
-## 📚 Panduan Penggunaan
-
-### Basic Query
-
-#### SELECT - Ambil Data
+All standard CodeIgniter query builder methods are available:
 
 ```php
-<? php
-class User_model extends CI_Model {
-    
-    public function get_all_users()
-    {
-        return $this->db->select(['id', 'name', 'email'])
-                        ->from('users')
-                        ->get()
-                        ->result();
-    }
-    
-    public function get_user_by_id($id)
-    {
-        return $this->db->from('users')
-                        ->where('id', $id)
-                        ->first();
-    }
-    
-    public function search_users($search)
-    {
-        return $this->db->from('users')
-                        ->search($search, ['name', 'email'], true)
-                        ->get()
-                        ->result();
-    }
+// SELECT
+$this->db->select('id, name, email');
+$this->db->select(['id', 'name', 'email']); // Array syntax
+
+// FROM
+$this->db->from('users');
+
+// WHERE
+$this->db->where('status', 1);
+$this->db->where('age >', 18);
+$this->db->where(['status' => 1, 'verified' => 1]);
+
+// JOIN
+$this->db->join('profiles', 'profiles.user_id = users.id', 'left');
+
+// ORDER BY
+$this->db->order_by('created_at', 'DESC');
+
+// LIMIT
+$this->db->limit(10, 0);
+
+// GET
+$result = $this->db->get('users');
+```
+
+### Enhanced Methods
+
+#### `first()` - Get First Row
+
+```php
+// Get single user
+$user = $this->db->where('email', 'john@example.com')->first('users');
+if ($user) {
+    echo $user->name;
+}
+
+// With relations
+$post = $this->db->with_one('user', 'id', 'user_id')->first('posts');
+```
+
+#### `exists()` - Check if Rows Exist
+
+```php
+// Check if user exists
+if ($this->db->where('email', 'john@example.com')->exists('users')) {
+    echo 'User exists';
+}
+
+// Check if user has orders
+if ($this->db->where('user_id', 1)->exists('orders')) {
+    echo 'User has orders';
 }
 ```
 
-#### INSERT - Tambah Data
+#### `doesnt_exist()` - Check if No Rows Exist
 
 ```php
-public function add_user($data)
-{
-    return $this->db->insert('users', [
-        'name' => $data['name'],
-        'email' => $data['email'],
-        'created_at' => date('Y-m-d H:i:s')
-    ]);
-}
-
-// Dengan auto ID
-public function add_user_get_id($data)
-{
-    return $this->db->insertGetId('users', [
-        'name' => $data['name'],
-        'email' => $data['email']
-    ]);
+if ($this->db->where('status', 'deleted')->doesnt_exist('users')) {
+    echo 'No deleted users';
 }
 ```
 
-#### UPDATE - Ubah Data
+#### `latest()` / `oldest()` - Quick Ordering
 
 ```php
-public function update_user($id, $data)
-{
-    return $this->db->where('id', $id)
-                    ->update('users', [
-                        'name' => $data['name'],
-                        'email' => $data['email'],
-                        'updated_at' => date('Y-m-d H:i:s')
-                    ]);
-}
+// Order by latest (DESC)
+$this->db->latest('created_at')->get('posts');
+// Generates: ORDER BY created_at DESC
 
-// Update dengan increment
-public function increment_posts($user_id)
-{
-    return $this->db->where('id', $user_id)
-                    ->increment('users', 'total_posts');
-}
-```
-
-#### DELETE - Hapus Data
-
-```php
-public function delete_user($id)
-{
-    return $this->db->where('id', $id)
-                    ->delete('users');
-}
-
-// Soft delete
-public function soft_delete_user($id)
-{
-    return $this->db->where('id', $id)
-                    ->update('users', [
-                        'deleted_at' => date('Y-m-d H:i:s')
-                    ]);
-}
+// Order by oldest (ASC)
+$this->db->oldest('created_at')->get('posts');
+// Generates: ORDER BY created_at ASC
 ```
 
 ---
 
-### Conditional WHERE
+## Advanced WHERE Conditions
 
-#### WHERE Variations
+### `where_not()` - Not Equal Condition
 
 ```php
-// Basic WHERE
-$this->db->where('status', 'active');
-
-// WHERE NOT
 $this->db->where_not('status', 'deleted');
+// Generates: WHERE `status` != 'deleted'
 
-// WHERE NULL
+$this->db->where_not('user_id', 5);
+// Generates: WHERE `user_id` != 5
+```
+
+### `where_null()` / `where_not_null()` - NULL Checks
+
+```php
+// IS NULL
 $this->db->where_null('deleted_at');
+// Generates: WHERE `deleted_at` IS NULL
 
-// WHERE NOT NULL
-$this->db->where_not_null('verified_at');
+// IS NOT NULL
+$this->db->where_not_null('email_verified_at');
+// Generates: WHERE `email_verified_at` IS NOT NULL
+```
 
-// WHERE BETWEEN
+### `where_between()` / `where_not_between()` - Range Conditions
+
+```php
+// BETWEEN
 $this->db->where_between('age', [18, 65]);
+// Generates: WHERE `age` BETWEEN 18 AND 65
 
-// WHERE NOT BETWEEN
-$this->db->where_not_between('salary', [10000, 30000]);
+$this->db->where_between('created_at', ['2023-01-01', '2023-12-31']);
+// Generates: WHERE `created_at` BETWEEN '2023-01-01' AND '2023-12-31'
 
-// WHERE IN
-$this->db->where_in('role', ['admin', 'moderator']);
+// NOT BETWEEN
+$this->db->where_not_between('price', [100, 500]);
+// Generates: WHERE `price` NOT BETWEEN 100 AND 500
 
-// WHERE NOT IN
-$this->db->where_not_in('status', ['banned', 'deleted']);
-
-// Multiple WHERE (AND)
-$this->db->where('status', 'active')
-         ->where('verified', 1)
-         ->where('role', 'user');
-
-// OR WHERE
-$this->db->where('status', 'active')
-         ->or_where('status', 'pending');
+// OR BETWEEN
+$this->db->or_where_between('age', [18, 25]);
+// Generates: OR `age` BETWEEN 18 AND 25
 ```
 
-#### Complex WHERE dengan Group
+### `order_by_sequence()` - Custom Sequence Ordering
 
 ```php
-// Nested WHERE dengan parentheses
-$this->db->where('status', 'active')
-         ->group(function($query) {
-             $query->where('role', 'admin')
-                   ->or_where('role', 'moderator');
-         });
-// Hasil: WHERE `status` = 'active' AND (`role` = 'admin' OR `role` = 'moderator')
+// Order by priority: high, medium, low
+$this->db->order_by_sequence('priority', ['high', 'medium', 'low']);
 
-// OR GROUP
-$this->db->where('verified', 1)
-         ->or_group(function($query) {
-             $query->where('premium', 1)
-                   ->where('created_at >=', '2024-01-01');
-         });
+// Order by status in specific sequence
+$this->db->order_by_sequence('status', ['pending', 'processing', 'completed', 'cancelled']);
+// Generates: ORDER BY CASE WHEN status='pending' THEN 0 WHEN status='processing' THEN 1 ...
 ```
 
-#### Conditional WHERE
+---
+
+## Eager Loading Relations
+
+### `with_one()` - Load Single Related Record
 
 ```php
-// WHEN: execute callback jika condition true
+// Load post with its author (user)
+$posts = $this->db->with_one('users', 'id', 'user_id')->get('posts');
+// Result: $post->users (single user object)
+
+// Load order with customer details
+$orders = $this->db->with_one('customers', 'id', 'customer_id')->get('orders');
+// Result: $order->customers
+
+// With alias
+$posts = $this->db->with_one(['users' => 'author'], 'id', 'user_id')->get('posts');
+// Result: $post->author
+
+// With conditions
+$posts = $this->db->with_one('users', 'id', 'user_id', function($query) {
+    $query->where('status', 'active')
+          ->select('id, name, email');
+})->get('posts');
+```
+
+**Parameters:**
+- `$relation` (string|array): Relation name or array with alias
+- `$foreignKey` (string|array): Foreign key(s) in related table
+- `$localKey` (string|array): Local key(s) in main table
+- `$callback` (callable|null): Optional callback for additional conditions
+
+### `with_many()` - Load Multiple Related Records
+
+```php
+// Load user's multiple orders
+$users = $this->db->with_many('orders', 'user_id', 'id')->get('users');
+// Result: $user->orders (array of order objects)
+
+// Load user's orders with conditions
+$users = $this->db->with_many('orders', 'user_id', 'id', function($query) {
+    $query->where('status', 'active')
+          ->order_by('created_at', 'DESC');
+})->get('users');
+
+// With alias
+$users = $this->db->with_many(['orders' => 'user_orders'], 'user_id', 'id')->get('users');
+// Result: $user->user_orders
+
+// Load posts with comments
+$posts = $this->db->with_many('comments', 'post_id', 'id')->get('posts');
+// Result: $post->comments (array of comment objects)
+```
+
+### Multiple Relations
+
+```php
+// Load multiple relations at once
+$posts = $this->db->with_one('users', 'id', 'user_id')
+                  ->with_many('comments', 'id', 'post_id')
+                  ->with_count('likes', 'id', 'post_id')
+                  ->get('posts');
+
+// Result:
+// $post->users        (single user object)
+// $post->comments     (array of comments)
+// $post->likes_count  (integer)
+```
+
+### Nested Relations
+
+```php
+// Load posts with comments, and comments with their users
+$posts = $this->db->with_many('comments', 'id', 'post_id', function($query) {
+    $query->with_one('users', 'id', 'user_id')
+          ->where('approved', 1);
+})->get('posts');
+
+// Result: $post->comments[0]->users
+```
+
+---
+
+## Aggregate Functions
+
+### `with_count()` - Count Related Records
+
+```php
+// Get users with their order count (can be sorted)
+$users = $this->db->with_count('orders', 'id', 'user_id')
+                  ->order_by('orders_count', 'DESC')
+                  ->get('users');
+// Result: $user->orders_count
+
+// With alias
+$this->db->with_count(['orders' => 'total_orders'], 'id', 'user_id');
+// Result: $user->total_orders
+
+// Can be used with other relations
+$users = $this->db->with_count('orders', 'id', 'user_id')
+                  ->with_many('posts', 'id', 'user_id')
+                  ->get('users');
+
+// In callbacks (for relation subqueries)
+$posts = $this->db->with_many('comments', 'id', 'post_id', function($query) {
+    $query->with_count('likes', 'id', 'comment_id');
+})->get('posts');
+```
+
+### `with_sum()` - Sum Column Values
+
+```php
+// Get users with total order amount (can be sorted)
+$users = $this->db->with_sum('orders', 'id', 'user_id', 'total_amount')
+                  ->order_by('orders_sum', 'DESC')
+                  ->get('users');
+// Result: $user->orders_sum
+
+// With alias
+$this->db->with_sum(['orders' => 'total_spent'], 'id', 'user_id', 'total_amount');
+// Result: $user->total_spent
+
+// With custom expression (mathematical operations)
+$invoices = $this->db->with_sum(['job' => 'total_after_discount'], 
+    'id', 'idinvoice', '(job_total_price_before_discount - job_discount)', true);
+// Result: $invoice->total_after_discount
+
+// With callback for WHERE conditions
+$users = $this->db->with_sum('orders', 'id', 'user_id', 'total_amount', false, function($query) {
+    $query->where('status', 'completed')
+          ->where('created_at >=', '2023-01-01');
+})->get('users');
+
+// With custom expression and callback
+$invoices = $this->db->with_sum(['job' => 'total_after_discount'], 
+    'id', 'idinvoice', '(job_total_price_before_discount - job_discount)', true, 
+    function($query) {
+        $query->where('status', 'active');
+    }
+);
+```
+
+### `with_avg()` - Calculate Average
+
+```php
+// Get users with average order amount
+$users = $this->db->with_avg('orders', 'id', 'user_id', 'total_amount')->get('users');
+// Result: $user->orders_avg
+
+// With alias
+$this->db->with_avg(['orders' => 'avg_order_value'], 'id', 'user_id', 'total_amount');
+// Result: $user->avg_order_value
+
+// With custom expression (mathematical operations)
+$orders = $this->db->with_avg('items', 'id', 'order_id', '(price * quantity)', true);
+// Result: $order->items_avg (average of calculated values)
+
+// With callback for WHERE conditions
+$users = $this->db->with_avg('orders', 'id', 'user_id', 'total_amount', false, function($query) {
+    $query->where('status', 'completed')
+          ->where_between('created_at', ['2023-01-01', '2023-12-31']);
+})->get('users');
+```
+
+### `with_max()` - Find Maximum Value
+
+```php
+// Get users with their highest order amount
+$users = $this->db->with_max('orders', 'id', 'user_id', 'total_amount')->get('users');
+// Result: $user->orders_max
+
+// Get posts with latest comment date
+$this->db->with_max(['comments' => 'latest_comment'], 'id', 'post_id', 'created_at');
+// Result: $post->latest_comment
+
+// With custom expression
+$products = $this->db->with_max('sales', 'id', 'product_id', '(base_price + tax)', true);
+// Result: $product->sales_max
+```
+
+### `with_min()` - Find Minimum Value
+
+```php
+// Get users with their lowest order amount
+$users = $this->db->with_min('orders', 'id', 'user_id', 'total_amount')->get('users');
+// Result: $user->orders_min
+
+// Get categories with earliest post date
+$this->db->with_min(['posts' => 'first_post'], 'id', 'category_id', 'created_at');
+// Result: $category->first_post
+
+// With custom expression
+$transactions = $this->db->with_min('payments', 'id', 'transaction_id', '(amount - discount)', true);
+// Result: $transaction->payments_min
+```
+
+---
+
+## Complex Calculations
+
+### `with_calculation()` - Custom Mathematical Expressions
+
+This method allows you to create complex calculations using multiple aggregate functions and mathematical operations.
+
+```php
+// Calculate efficiency percentage: (finished_qty / total_qty) * 100
+$orders = $this->db->with_calculation(['order_items' => 'efficiency_percentage'], 
+    'order_id', 'id', 
+    '(SUM(finished_qty) / SUM(total_qty)) * 100'
+)->get('orders');
+// Result: $order->efficiency_percentage
+
+// Calculate profit margin: ((revenue - cost) / revenue) * 100
+$products = $this->db->with_calculation(['sales' => 'profit_margin'], 
+    'product_id', 'id',
+    '((SUM(selling_price * quantity) - SUM(cost_price * quantity)) / SUM(selling_price * quantity)) * 100'
+)->get('products');
+
+// Calculate average order value with discount
+$customers = $this->db->with_calculation(['orders' => 'avg_order_with_discount'], 
+    'customer_id', 'id',
+    'AVG(total_amount - discount_amount)'
+)->get('customers');
+
+// Calculate production duration in days using DATEDIFF
+$transactions = $this->db->with_calculation(['transaction_step' => 'production_duration_days'], 
+    'idtransaction_detail', 'idtransaction_detail',
+    'DATEDIFF(MAX(date), MIN(date))'
+)->get('transaction_detail');
+
+// Calculate weighted average with callback for conditions
+$products = $this->db->with_calculation(['reviews' => 'weighted_rating'], 
+    'product_id', 'id',
+    'SUM(rating * helpful_votes) / SUM(helpful_votes)',
+    function($query) {
+        $query->where('status', 'approved')
+              ->where('helpful_votes >', 0);
+    }
+)->get('products');
+
+// Multiple calculations in one query
+$orders = $this->db->with_calculation(['order_items' => 'total_revenue'], 'id', 'order_id', 'SUM(price * quantity)')
+                  ->with_calculation(['order_items' => 'total_cost'], 'id', 'order_id', 'SUM(cost * quantity)')
+                  ->with_calculation(['order_items' => 'profit'], 'id', 'order_id', 'SUM((price - cost) * quantity)')
+                  ->get('orders');
+```
+
+**Supported Operations:**
+- Basic math: `+`, `-`, `*`, `/`, `%`
+- Aggregate functions: `SUM`, `AVG`, `COUNT`, `MIN`, `MAX`
+- Date functions: `DATEDIFF`, `TIMESTAMPDIFF`
+- Conditional: `CASE WHEN ... THEN ... END`
+- Mathematical functions: `ROUND`, `FLOOR`, `CEIL`, `ABS`
+
+### `where_aggregate()` - Filter by Aggregate Values
+
+Filter results based on aggregate calculations:
+
+```php
+// Filter by calculated field
+$this->db->with_calculation(['transaction_detail' => 'sales_price'], 'id', 'idtransaction', 'SUM(price)')
+         ->where_aggregate('sales_price >', 10000)
+         ->get('transaction');
+
+// Filter by sum aggregate
+$this->db->with_sum(['orders' => 'total_spent'], 'id', 'user_id', 'amount')
+         ->where_aggregate('total_spent >=', 5000)
+         ->get('users');
+
+// Multiple conditions
+$this->db->with_avg(['reviews' => 'avg_rating'], 'id', 'product_id', 'rating')
+         ->where_aggregate('avg_rating >', 4.5)
+         ->where_aggregate('avg_rating <', 5.0)
+         ->get('products');
+
+// With OR condition
+$this->db->with_sum(['orders' => 'total_amount'], 'id', 'user_id', 'amount')
+         ->where_aggregate('total_amount >', 10000)
+         ->or_where_aggregate('total_amount =', 0)
+         ->get('users');
+```
+
+---
+
+## WHERE EXISTS Queries
+
+### `where_exists()` - Check Existence with Callback
+
+```php
+// Outlets that have marketing SPK with transactions and delivery
+$this->db->where_exists(function($query) {
+    $query->select('1')
+          ->from('marketing_spk ms')
+          ->join('transaction t', 't.idmarketing_spk = ms.idmarketing_spk AND t.idoutlet = ms.idspk_workshop AND t.status = 1', 'inner')
+          ->join('transaction_delivery td', 'td.idtransaction = t.idtransaction', 'inner')
+          ->where('ms.idspk_workshop = outlet.idoutlet')
+          ->where('ms.status', 1);
+});
+
+// Users that have published posts
+$this->db->where_exists(function($query) {
+    $query->select('1')
+          ->from('posts')
+          ->where('posts.user_id = users.id')
+          ->where('status', 'published');
+});
+```
+
+### `where_not_exists()` - Check Non-Existence
+
+```php
+// Users that don't have any published posts
+$this->db->where_not_exists(function($query) {
+    $query->select('1')
+          ->from('posts')
+          ->where('posts.user_id = users.id')
+          ->where('status', 'published');
+});
+
+// Outlets without any completed transactions
+$this->db->where_not_exists(function($query) {
+    $query->select('1')
+          ->from('marketing_spk ms')
+          ->join('transaction t', 't.idmarketing_spk = ms.idmarketing_spk', 'inner')
+          ->where('ms.idspk_workshop = outlet.idoutlet')
+          ->where('t.status', 'completed');
+});
+```
+
+### `where_exists_relation()` - Simplified Existence Check
+
+```php
+// Users that have orders
+$this->db->from('users')->where_exists_relation('orders', 'id', 'user_id');
+
+// Users that have active orders  
+$this->db->from('users')->where_exists_relation('orders', 'id', 'user_id', function($query) {
+    $query->where('status', 'active');
+});
+
+// Multiple foreign keys
+$this->db->from('users')->where_exists_relation('user_roles', ['id', 'tenant_id'], ['user_id', 'tenant_id']);
+
+// Marketing SPK with transactions and delivery
+$this->db->from('outlet')->where_exists_relation('marketing_spk', 'idspk_workshop', 'idoutlet', function($query) {
+    $query->join('transaction t', 't.idmarketing_spk = marketing_spk.idmarketing_spk AND t.idoutlet = marketing_spk.idspk_workshop AND t.status = 1', 'inner')
+          ->join('transaction_delivery td', 'td.idtransaction = t.idtransaction', 'inner')
+          ->where('marketing_spk.status', 1);
+});
+```
+
+### `where_has()` - Relationship Existence with Count
+
+```php
+// Users that have orders
+$this->db->from('users')->where_has('orders', 'id', 'user_id');
+
+// Users that have active orders
+$this->db->from('users')->where_has('orders', 'id', 'user_id', function($query) {
+    $query->where('status', 'active');
+});
+
+// Users with at least 5 orders
+$this->db->from('users')->where_has('orders', 'id', 'user_id', null, '>=', 5);
+```
+
+### `where_doesnt_have()` - Relationship Non-Existence
+
+```php
+// Users that don't have any orders
+$this->db->from('users')->where_doesnt_have('orders', 'id', 'user_id');
+
+// Users that don't have cancelled orders
+$this->db->from('users')->where_doesnt_have('orders', 'id', 'user_id', function($query) {
+    $query->where('status', 'cancelled');
+});
+```
+
+### OR Variants
+
+```php
+// OR WHERE EXISTS
+$this->db->or_where_exists(function($query) {
+    $query->select('1')->from('posts')->where('posts.user_id = users.id');
+});
+
+// OR WHERE NOT EXISTS
+$this->db->or_where_not_exists(function($query) {
+    $query->select('1')->from('orders')->where('orders.user_id = users.id');
+});
+
+// OR WHERE EXISTS RELATION
+$this->db->from('users')
+         ->where_exists_relation('orders', 'id', 'user_id')
+         ->or_where_exists_relation('posts', 'id', 'user_id');
+```
+
+---
+
+## Conditional Queries
+
+### `when()` - Execute Callback When Condition is True
+
+```php
+// Conditional WHERE clause
 $this->db->when($search_term, function($query) use ($search_term) {
-            $query->like('name', $search_term);
-         })
-         ->when($role != '', function($query) use ($role) {
-            $query->where('role', $role);
-         });
+    $query->like('name', $search_term);
+});
 
-// UNLESS: execute callback jika condition FALSE
-$this->db->unless($user_is_admin, function($query) {
-    $query->where('visibility', 'public');
+// With else callback
+$this->db->when($user_role == 'admin', function($query) {
+    $query->select('*');
+}, function($query) {
+    $query->select('id, name, email');
+});
+
+// Multiple conditions
+$query = $this->db->from('users');
+
+$query->when($filter_status, function($q) use ($filter_status) {
+    $q->where('status', $filter_status);
+});
+
+$query->when($filter_role, function($q) use ($filter_role) {
+    $q->where('role', $filter_role);
+});
+
+$query->when($search, function($q) use ($search) {
+    $q->search($search, ['name', 'email']);
+});
+
+$result = $query->get();
+```
+
+### `unless()` - Execute Callback Unless Condition is True
+
+```php
+// Add WHERE clause unless user is admin
+$this->db->unless($user_role == 'admin', function($query) {
+    $query->where('status', 'published');
+});
+
+// With else callback
+$this->db->unless(empty($search), function($query) use ($search) {
+    // This runs when $search is NOT empty
+    $query->like('title', $search);
+}, function($query) {
+    // This runs when $search IS empty
+    $query->order_by('created_at', 'DESC');
 });
 ```
 
 ---
 
-### Eager Loading Relations
+## Search and Filtering
 
-#### With One (One-to-One Relationship)
-
-```php
-<? php
-class Post_model extends CI_Model {
-    
-    public function get_posts_with_author()
-    {
-        // Load posts dengan author data
-        return $this->db->with_one('users', 'user_id', 'id')
-                        ->from('posts')
-                        ->get()
-                        ->result();
-    }
-    
-    public function get_posts_with_alias()
-    {
-        // Dengan alias
-        return $this->db->with_one(['users' => 'author'], 'user_id', 'id')
-                        ->from('posts')
-                        ->get()
-                        ->result();
-    }
-    
-    public function get_posts_with_conditions()
-    {
-        // Dengan WHERE conditions pada relation
-        return $this->db->with_one('users', 'user_id', 'id', function($query) {
-                            $query->select(['id', 'name', 'email'])
-                                  ->where('status', 'active');
-                        })
-                        ->from('posts')
-                        ->where('status', 'published')
-                        ->get()
-                        ->result();
-    }
-}
-
-// Usage di Controller
-public function view()
-{
-    $this->load->model('Post_model');
-    $posts = $this->Post_model->get_posts_with_author();
-    
-    // Akses relation data
-    foreach ($posts as $post) {
-        echo $post->title;
-        echo $post->author->name;  // Relation loaded automatically
-    }
-}
-```
-
-#### With Many (One-to-Many Relationship)
+### `search()` - Multi-Column Search
 
 ```php
-public function get_users_with_posts()
-{
-    // Load users dengan semua posts mereka
-    return $this->db->with_many('posts', 'user_id', 'id')
-                    ->from('users')
-                    ->get()
-                    ->result();
-}
+// Search in name and email columns with OR
+$this->db->search('john', ['name', 'email']);
+// Generates: WHERE (`name` LIKE '%john%' OR `email` LIKE '%john%')
 
-public function get_users_with_recent_posts()
-{
-    // Posts dengan kondisi tertentu
-    return $this->db->with_many('posts', 'user_id', 'id', function($query) {
-                        $query->where('status', 'published')
-                              ->order_by('created_at', 'DESC')
-                              ->limit(5);
-                    })
-                    ->from('users')
-                    ->get()
-                    ->result();
-}
+// Search with AND conditions
+$this->db->search('admin', ['role', 'title'], false);
+// Generates: WHERE (`role` LIKE '%admin%' AND `title` LIKE '%admin%')
 
-// Usage di Controller
-public function posts_list()
-{
-    $this->load->model('User_model');
-    $users = $this->User_model->get_users_with_posts();
-    
-    foreach ($users as $user) {
-        echo $user->name;
-        foreach ($user->posts as $post) {  // Array of posts
-            echo $post->title;
-        }
-    }
-}
-```
-
-#### Multiple Relations
-
-```php
-public function get_posts_full()
-{
-    return $this->db->with_one('users', 'user_id', 'id')           // Author
-                    ->with_many('comments', 'post_id', 'id')       // Comments
-                    ->with_one('categories', 'category_id', 'id')  // Category
-                    ->from('posts')
-                    ->get()
-                    ->result();
-}
-
-// Usage
-$posts = $this->db->get_posts_full();
-foreach ($posts as $post) {
-    echo $post->title;
-    echo $post->users->name;              // Author
-    echo $post->categories->name;         // Category
-    foreach ($post->comments as $comment) {  // Multiple comments
-        echo $comment->content;
-    }
-}
+// Complex search with other conditions
+$this->db->where('status', 1)
+         ->search($search_term, ['name', 'email', 'phone'])
+         ->order_by('name', 'ASC')
+         ->get('users');
 ```
 
 ---
 
-### Aggregates & Calculations
+## Pagination with calc_rows()
 
-#### With Count
+### `calc_rows()` - Enable SQL_CALC_FOUND_ROWS
+
+This method automatically adds `SQL_CALC_FOUND_ROWS` to get total count without extra query:
 
 ```php
-public function get_users_with_post_count()
-{
-    return $this->db->with_count('posts', 'user_id', 'id')
-                    ->from('users')
-                    ->order_by('posts_count', 'DESC')
-                    ->get()
-                    ->result();
-}
+// Use with array select
+$result = $this->db->select(['idoutlet as id', 'outlet_name as text'])
+                   ->calc_rows()
+                   ->get('outlet', 20, 0);
 
-// Usage
-$users = $this->db->get_users_with_post_count();
+$data = $result->result();      // 20 rows
+$total = $result->found_rows(); // Total available rows
+
+// Works with eager loading relations too!
+$result = $this->db->select(['idoutlet as id', 'outlet_name as text'])
+                   ->with_one('users', 'user_id', 'id')
+                   ->calc_rows()
+                   ->get('outlet', 20, 0);
+
+$data = $result->result();      // Data with relations loaded
+$total = $result->found_rows(); // Total count
+```
+
+### `get_found_rows()` - Get Total Count (Legacy)
+
+```php
+// Old way (still works for backward compatibility)
+$data = $this->db->select(['id', 'name'])
+                 ->calc_rows()
+                 ->get('users', 10, 0);
+$total = $this->db->get_found_rows(); // Works but not recommended
+
+// New recommended way
+$result = $this->db->select(['id', 'name'])
+                   ->calc_rows()
+                   ->get('users', 10, 0);
+$total = $result->found_rows(); // Better approach!
+```
+
+---
+
+## Query Grouping
+
+### `group()` - Group WHERE Conditions
+
+```php
+$this->db->where('status', 'active')
+         ->group(function($query) {
+             $query->where('name', 'John')
+                   ->or_where('name', 'Jane');
+         });
+// Generates: WHERE `status` = 'active' AND (`name` = 'John' OR `name` = 'Jane')
+
+// Complex grouping
+$this->db->where('status', 'active')
+         ->group(function($query) {
+             $query->where('role', 'admin')
+                   ->or_where('role', 'moderator');
+         })
+         ->group(function($query) {
+             $query->where('age >', 18)
+                   ->where('verified', 1);
+         });
+// Generates: WHERE `status` = 'active' 
+//            AND (`role` = 'admin' OR `role` = 'moderator') 
+//            AND (`age` > 18 AND `verified` = 1)
+```
+
+### `or_group()` - Group with OR Operator
+
+```php
+$this->db->where('status', 'active')
+         ->or_group(function($query) {
+             $query->where('name', 'John')
+                   ->where('age', '>', 18);
+         });
+// Generates: WHERE `status` = 'active' OR (`name` = 'John' AND `age` > 18)
+
+// Multiple OR groups
+$this->db->where('status', 'active')
+         ->or_group(function($query) {
+             $query->where('role', 'admin');
+         })
+         ->or_group(function($query) {
+             $query->where('role', 'moderator')
+                   ->where('verified', 1);
+         });
+// Generates: WHERE `status` = 'active' 
+//            OR (`role` = 'admin') 
+//            OR (`role` = 'moderator' AND `verified` = 1)
+```
+
+---
+
+## Security Features
+
+### QueryValidationTrait
+
+CustomQueryBuilder includes comprehensive SQL injection prevention:
+
+#### Validated Elements
+
+1. **Column Names**
+   - Alphanumeric, underscores, dots (for table.column)
+   - Max length: 64 characters
+   - Blocks SQL keywords and dangerous patterns
+
+2. **Table Names**
+   - Alphanumeric and underscores only
+   - Max length: 64 characters
+   - Blocks SQL keywords
+
+3. **Operators**
+   - Whitelist: `=`, `>`, `<`, `>=`, `<=`, `!=`, `<>`, `BETWEEN`, `NOT BETWEEN`
+
+4. **Expressions**
+   - Allowed SQL functions: `SUM`, `AVG`, `COUNT`, `MAX`, `MIN`, `ROUND`, `FLOOR`, `CEIL`, `ABS`, `COALESCE`, `IFNULL`, `NULLIF`, `CASE`, `WHEN`, `THEN`, `ELSE`, `END`, `DATEDIFF`, `TIMESTAMPDIFF`, `CONCAT`, etc.
+   - Blocks dangerous patterns: `INSERT`, `UPDATE`, `DELETE`, `DROP`, `UNION`, `EXEC`, `EXECUTE`, `CREATE`, `ALTER`, `TRUNCATE`
+   - Validates parentheses balance
+   - Max expression length: 500 characters
+
+#### Dangerous Patterns Blocked
+
+```php
+// These patterns are automatically blocked:
+- SQL keywords: SELECT, INSERT, UPDATE, DELETE, DROP, UNION, OR, AND, WHERE, FROM, JOIN, etc.
+- Comments: --, /*, */
+- Multiple statements: semicolons (;)
+- String concatenation: ||, &&
+- Stored procedures: xp_, sp_
+```
+
+### Safe Usage Examples
+
+```php
+// ✅ SAFE - Using validated methods
+$this->db->where('status', $user_input);
+$this->db->where_in('id', $array_input);
+$this->db->with_sum('orders', 'user_id', 'id', 'amount');
+
+// ✅ SAFE - Expressions are validated
+$this->db->with_calculation(['sales' => 'profit'], 
+    'product_id', 'id',
+    'SUM(price * quantity) - SUM(cost * quantity)'
+);
+
+// ❌ UNSAFE - Don't do this
+$this->db->where("status = '{$user_input}'", null, false); // Direct concatenation
+
+// ✅ SAFE - Use escape() method
+$this->db->where("status = " . $this->db->escape($user_input), null, false);
+```
+
+---
+
+## Best Practices
+
+### 1. Always Use Method Chaining
+
+```php
+// ✅ Good
+$result = $this->db->select('id, name')
+                   ->where('status', 1)
+                   ->order_by('name', 'ASC')
+                   ->limit(10)
+                   ->get('users');
+
+// ❌ Avoid
+$this->db->select('id, name');
+$this->db->where('status', 1);
+$result = $this->db->get('users');
+```
+
+### 2. Use Eager Loading for Relations
+
+```php
+// ✅ Good - Single query per relation
+$users = $this->db->with_many('orders', 'user_id', 'id')
+                  ->with_many('posts', 'user_id', 'id')
+                  ->get('users');
+
+// ❌ Avoid - N+1 query problem
+$users = $this->db->get('users')->result();
 foreach ($users as $user) {
-    echo $user->name .   ' - Posts: ' . $user->posts_count;
+    $user->orders = $this->db->where('user_id', $user->id)->get('orders')->result();
+    $user->posts = $this->db->where('user_id', $user->id)->get('posts')->result();
 }
 ```
 
-#### With Sum
+### 3. Use Aggregates Instead of Looping
 
 ```php
-public function get_users_with_total_spent()
-{
-    return $this->db->with_sum('orders', 'user_id', 'id', 'total_amount')
-                    ->from('users')
-                    ->order_by('orders_sum', 'DESC')
-                    ->get()
-                    ->result();
-}
+// ✅ Good - Single query with aggregate
+$users = $this->db->with_count('orders', 'user_id', 'id')
+                  ->with_sum('orders', 'user_id', 'id', 'total_amount')
+                  ->get('users');
 
-// Dengan alias
-public function get_users_spending()
-{
-    return $this->db->with_sum(['orders' => 'total_spent'], 'user_id', 'id', 'total_amount')
-                    ->from('users')
-                    ->get()
-                    ->result();
-}
-
-// Dengan custom expression
-public function get_invoices_total_after_discount()
-{
-    return $this->db->with_sum(
-                        ['job' => 'total_after_discount'],
-                        'idinvoice',
-                        'id',
-                        '(job_total_price_before_discount - job_discount)',
-                        true  // is_custom_expression
-                    )
-                    ->from('invoice')
-                    ->get()
-                    ->result();
-}
-
-// Dengan callback filter
-public function get_users_completed_orders_total()
-{
-    return $this->db->with_sum('orders', 'user_id', 'id', 'amount', false, function($query) {
-                        $query->where('status', 'completed')
-                              ->where('created_at >=', '2024-01-01');
-                    })
-                    ->from('users')
-                    ->get()
-                    ->result();
+// ❌ Avoid - Multiple queries in loop
+$users = $this->db->get('users')->result();
+foreach ($users as $user) {
+    $user->order_count = $this->db->where('user_id', $user->id)->count_all_results('orders');
+    $user->order_total = $this->db->select_sum('total_amount')
+                                   ->where('user_id', $user->id)
+                                   ->get('orders')
+                                   ->row()->total_amount;
 }
 ```
 
-#### With Average, Min, Max
+### 4. Use calc_rows() for Pagination
 
 ```php
-// Average order value per user
-public function get_users_avg_order()
-{
-    return $this->db->with_avg('orders', 'user_id', 'id', 'amount')
-                    ->from('users')
-                    ->get()
-                    ->result();
-}
+// ✅ Good - Single query for data + count
+$result = $this->db->select('id, name')
+                   ->calc_rows()
+                   ->get('users', 10, 0);
+$data = $result->result();
+$total = $result->found_rows();
 
-// Highest order amount per user
-public function get_users_max_order()
-{
-    return $this->db->with_max('orders', 'user_id', 'id', 'amount')
-                    ->from('users')
-                    ->get()
-                    ->result();
-}
+// ❌ Avoid - Two separate queries
+$data = $this->db->select('id, name')->get('users', 10, 0)->result();
+$total = $this->db->count_all_results('users');
+```
 
-// Lowest order amount per user
-public function get_users_min_order()
-{
-    return $this->db->with_min('orders', 'user_id', 'id', 'amount')
-                    ->from('users')
-                    ->get()
-                    ->result();
+### 5. Use Conditional Methods for Dynamic Queries
+
+```php
+// ✅ Good - Clean conditional logic
+$query = $this->db->from('users')
+                  ->when($search, function($q) use ($search) {
+                      $q->search($search, ['name', 'email']);
+                  })
+                  ->when($status, function($q) use ($status) {
+                      $q->where('status', $status);
+                  })
+                  ->when($role, function($q) use ($role) {
+                      $q->where('role', $role);
+                  });
+
+// ❌ Avoid - Nested if statements
+if ($search) {
+    $this->db->like('name', $search);
+    $this->db->or_like('email', $search);
+}
+if ($status) {
+    $this->db->where('status', $status);
+}
+if ($role) {
+    $this->db->where('role', $role);
 }
 ```
 
-#### With Custom Calculation
+### 6. Use where_exists_relation() for Existence Checks
 
 ```php
-public function get_orders_with_efficiency()
-{
-    return $this->db->with_calculation(
-                        ['order_items' => 'efficiency_percentage'],
-                        'order_id',
-                        'id',
-                        '(SUM(finished_qty) / SUM(total_qty)) * 100'
-                    )
-                    ->from('orders')
-                    ->get()
-                    ->result();
-}
+// ✅ Good - Single query with EXISTS
+$users = $this->db->from('users')
+                  ->where_exists_relation('orders', 'id', 'user_id')
+                  ->get();
 
-public function get_products_profit_margin()
-{
-    return $this->db->with_calculation(
-                        ['sales' => 'profit_margin'],
-                        'product_id',
-                        'id',
-                        '((SUM(selling_price * quantity) - SUM(cost_price * quantity)) / SUM(selling_price * quantity)) * 100'
-                    )
-                    ->from('products')
-                    ->get()
-                    ->result();
-}
-
-// Dengan callback untuk WHERE conditions
-public function get_transactions_production_days()
-{
-    return $this->db->with_calculation(
-                        ['transaction_step' => 'production_duration_days'],
-                        'idtransaction_detail',
-                        'idtransaction_detail',
-                        'DATEDIFF(MAX(date), MIN(date))',
-                        function($query) {
-                            $query->where('status', 'completed');
-                        }
-                    )
-                    ->from('transaction_detail')
-                    ->get()
-                    ->result();
-}
+// ❌ Avoid - Subquery or JOIN
+$users = $this->db->select('users.*')
+                  ->from('users')
+                  ->join('orders', 'orders.user_id = users.id')
+                  ->group_by('users.id')
+                  ->get();
 ```
 
-#### Filter dengan Where Aggregate
+### 7. Always Validate User Input
 
 ```php
-public function get_users_high_spenders()
-{
-    return $this->db->with_sum(['orders' => 'total_spent'], 'user_id', 'id', 'amount')
-                    ->where_aggregate('total_spent >=', 10000)
-                    ->from('users')
-                    ->get()
-                    ->result();
-}
+// ✅ Good - Validated through methods
+$this->db->where('status', $user_input);
+$this->db->where_in('id', $user_array);
 
-public function get_products_efficient()
-{
-    return $this->db->with_calculation(
-                        ['order_items' => 'efficiency_percentage'],
-                        'product_id',
-                        'id',
-                        '(SUM(finished_qty) / SUM(total_qty)) * 100'
-                    )
-                    ->where_aggregate('efficiency_percentage >=', 90)
-                    ->from('products')
-                    ->get()
-                    ->result();
-}
+// ✅ Good - Explicit escape
+$this->db->where("custom_field = " . $this->db->escape($user_input), null, false);
 
-// Multiple aggregate conditions
-public function get_users_moderate_spenders()
-{
-    return $this->db->with_sum(['orders' => 'total'], 'user_id', 'id', 'amount')
-                    ->where_aggregate('total >', 5000)
-                    ->where_aggregate('total <', 50000)
-                    ->from('users')
-                    ->get()
-                    ->result();
-}
+// ❌ Never do this
+$this->db->where("status = '{$user_input}'", null, false);
 ```
 
 ---
 
-### Advanced Features
+## Complete Example
 
-#### WHERE EXISTS / NOT EXISTS
-
-```php
-// Users yang memiliki orders
-public function get_users_with_orders()
-{
-    return $this->db->from('users')
-                    ->where_exists_relation('orders', 'user_id', 'id')
-                    ->get()
-                    ->result();
-}
-
-// Users yang memiliki published posts
-public function get_users_with_published_posts()
-{
-    return $this->db->from('users')
-                    ->where_exists_relation('posts', 'user_id', 'id', function($query) {
-                        $query->where('status', 'published');
-                    })
-                    ->get()
-                    ->result();
-}
-
-// Users yang TIDAK memiliki orders
-public function get_users_without_orders()
-{
-    return $this->db->from('users')
-                    ->where_not_exists_relation('orders', 'user_id', 'id')
-                    ->get()
-                    ->result();
-}
-
-// OR WHERE EXISTS
-public function get_active_or_premium_users()
-{
-    return $this->db->from('users')
-                    ->where('status', 'active')
-                    ->or_where_exists_relation('premium_subscriptions', 'user_id', 'id')
-                    ->get()
-                    ->result();
-}
-```
-
-#### WHERE HAS (With Count)
+Here's a comprehensive example combining multiple features:
 
 ```php
-// Users yang memiliki minimal 5 posts
-public function get_productive_users()
-{
-    return $this->db->from('users')
-                    ->where_has('posts', 'user_id', 'id', null, '>=', 5)
-                    ->get()
-                    ->result();
-}
+// Get users with their data and related information
+$page = 1;
+$per_page = 20;
+$offset = ($page - 1) * $per_page;
+$search = $this->input->get('search');
+$status = $this->input->get('status');
+$role = $this->input->get('role');
+$min_orders = $this->input->get('min_orders');
 
-// Users yang memiliki orders dengan kondisi tertentu
-public function get_users_with_big_purchases()
-{
-    return $this->db->from('users')
-                    ->where_has('orders', 'user_id', 'id', function($query) {
-                        $query->where('amount >', 10000);
-                    }, '>=', 3)  // Minimal 3 purchase > 10000
-                    ->get()
-                    ->result();
-}
+$result = $this->db->select(['id', 'name', 'email', 'created_at'])
+                   // Eager load profile (single relation)
+                   ->with_one('profiles', 'id', 'user_id', function($query) {
+                       $query->select('user_id, avatar, bio');
+                   })
+                   // Eager load latest orders (multiple relations with conditions)
+                   ->with_many('orders', 'id', 'user_id', function($query) {
+                       $query->where('status', 'completed')
+                             ->order_by('created_at', 'DESC')
+                             ->limit(5);
+                   })
+                   // Count total orders
+                   ->with_count('orders', 'id', 'user_id')
+                   // Sum total order amount
+                   ->with_sum(['orders' => 'total_spent'], 'id', 'user_id', 'total_amount', false, function($query) {
+                       $query->where('status', 'completed');
+                   })
+                   // Calculate average order value
+                   ->with_avg(['orders' => 'avg_order_value'], 'id', 'user_id', 'total_amount')
+                   // Conditional search
+                   ->when($search, function($query) use ($search) {
+                       $query->search($search, ['name', 'email']);
+                   })
+                   // Conditional status filter
+                   ->when($status, function($query) use ($status) {
+                       $query->where('status', $status);
+                   })
+                   // Conditional role filter
+                   ->when($role, function($query) use ($role) {
+                       $query->where('role', $role);
+                   })
+                   // Filter by minimum orders using aggregate
+                   ->when($min_orders, function($query) use ($min_orders) {
+                       $query->where_has('orders', 'id', 'user_id', null, '>=', $min_orders);
+                   })
+                   // Only users that have verified email
+                   ->where_not_null('email_verified_at')
+                   // Exclude deleted users
+                   ->where_not('status', 'deleted')
+                   // Order by total spent (from aggregate)
+                   ->order_by('total_spent', 'DESC')
+                   // Enable pagination with total count
+                   ->calc_rows()
+                   // Execute query
+                   ->get('users', $per_page, $offset);
 
-// Users yang TIDAK memiliki posts
-public function get_inactive_users()
-{
-    return $this->db->from('users')
-                    ->where_doesnt_have('posts', 'user_id', 'id')
-                    ->get()
-                    ->result();
-}
-```
+// Get data and total count
+$data = $result->result();
+$total = $result->found_rows();
 
-#### Chunking (Process Large Datasets)
+// Calculate pagination
+$total_pages = ceil($total / $per_page);
 
-```php
-// Basic chunking
-public function process_all_users()
-{
-    $processed = 0;
+// Access data
+foreach ($data as $user) {
+    echo $user->name;                    // Name
+    echo $user->profiles->avatar;        // Avatar from profile (single)
+    echo $user->orders_count;            // Count of orders
+    echo $user->total_spent;             // Sum of order amounts
+    echo $user->avg_order_value;         // Average order value
     
-    $this->db->chunk(1000, function($users) use (&$processed) {
-        foreach ($users as $user) {
-            // Process user
-            $this->send_email($user->email);
-            $processed++;
-        }
-    }, 'users');
-    
-    echo "Processed: $processed users";
-}
-
-// Chunking dengan conditions
-public function process_active_users()
-{
-    $this->db->where('status', 'active')
-             ->chunk(500, function($users, $page) {
-                 echo "Processing page: $page\n";
-                 foreach ($users as $user) {
-                     $this->update_last_activity($user->id);
-                 }
-             }, 'users');
-}
-
-// Chunk by ID (lebih efisien untuk dataset besar)
-public function process_users_by_id()
-{
-    $this->db->chunk_by_id(2000, function($users, $page) {
-        foreach ($users as $user) {
-            $this->process_user($user);
-        }
-    }, 'id', 'users');
-}
-```
-
-#### SQL_CALC_FOUND_ROWS untuk Pagination
-
-```php
-public function get_users_paginated($page = 1, $perPage = 20)
-{
-    $offset = ($page - 1) * $perPage;
-    
-    $result = $this->db->select(['id', 'name', 'email'])
-                       ->calc_rows()  // Enable SQL_CALC_FOUND_ROWS
-                       ->from('users')
-                       ->where('status', 'active')
-                       ->order_by('name', 'ASC')
-                       ->limit($perPage, $offset)
-                       ->get();
-    
-    return [
-        'data' => $result->result(),
-        'total' => $result->found_rows(),
-        'page' => $page,
-        'perPage' => $perPage
-    ];
-}
-```
-
-#### Transactions
-
-```php
-public function transfer_funds($from_user, $to_user, $amount)
-{
-    return $this->db->transaction(function() use ($from_user, $to_user, $amount) {
-        // Deduct from sender
-        $this->db->where('id', $from_user)
-                 ->update('users', [
-                     'balance' => $this->db->raw('balance - ' . $amount)
-                 ]);
-        
-        // Add to receiver
-        $this->db->where('id', $to_user)
-                 ->update('users', [
-                     'balance' => $this->db->raw('balance + ' . $amount)
-                 ]);
-        
-        // Log transaction
-        $this->db->insert('transaction_logs', [
-            'from_user' => $from_user,
-            'to_user' => $to_user,
-            'amount' => $amount,
-            'created_at' => date('Y-m-d H:i:s')
-        ]);
-        
-        return true;
-    });
-}
-
-// Strict mode (throw exception on failure)
-public function critical_operation()
-{
-    return $this->db->transaction(function() {
-        // Your operations
-        return true;
-    }, true);  // strict = true
-}
-```
-
-#### Search & Pluck
-
-```php
-public function search_users($term)
-{
-    return $this->db->from('users')
-                    ->search($term, ['name', 'email', 'phone'])
-                    ->get()
-                    ->result();
-}
-
-// Get specific column values
-public function get_user_emails()
-{
-    return $this->db->from('users')
-                    ->pluck('email');
-}
-
-// Pluck dengan nested relation
-public function get_author_names()
-{
-    return $this->db->with_one('users', 'user_id', 'id')
-                    ->from('posts')
-                    ->pluck('users.name');
-}
-```
-
-#### First/Exists/Latest/Oldest
-
-```php
-// Get first user with conditions
-$first_user = $this->db->where('status', 'active')
-                       ->first('users');
-
-// Check if record exists
-$exists = $this->db->where('email', 'john@example.com')
-                   ->exists('users');
-
-if (!  $exists) {
-    echo "User not found";
-}
-
-// Order by latest/oldest
-$latest_posts = $this->db->from('posts')
-                         ->latest('created_at')  // DESC
-                         ->limit(10)
-                         ->get()
-                         ->result();
-
-$oldest_posts = $this->db->from('posts')
-                        ->oldest('created_at')   // ASC
-                        ->limit(10)
-                        ->get()
-                        ->result();
-```
-
----
-
-## 🔌 API Reference
-
-### Selection Methods
-| Method | Description |
-|--------|-------------|
-| `select($columns)` | Specify columns to select |
-| `add_select($columns)` | Add additional columns |
-| `distinct()` | Select distinct records |
-| `pluck($column)` | Get array of single column values |
-
-### WHERE Conditions
-| Method | Description |
-|--------|-------------|
-| `where($column, $value)` | WHERE clause |
-| `or_where($column, $value)` | OR WHERE clause |
-| `where_not($column, $value)` | WHERE column != value |
-| `where_null($column)` | WHERE column IS NULL |
-| `where_not_null($column)` | WHERE column IS NOT NULL |
-| `where_in($column, $values)` | WHERE IN clause |
-| `where_not_in($column, $values)` | WHERE NOT IN clause |
-| `where_between($column, $values)` | WHERE BETWEEN clause |
-| `where_not_between($column, $values)` | WHERE NOT BETWEEN clause |
-| `search($term, $columns)` | Search across multiple columns |
-| `group($callback)` | Group WHERE conditions with AND |
-| `or_group($callback)` | Group WHERE conditions with OR |
-
-### Relations & Joins
-| Method | Description |
-|--------|-------------|
-| `with($relation, $fk, $lk, $multiple, $callback)` | Eager load relation |
-| `with_one($relation, $fk, $lk, $callback)` | One-to-one relation |
-| `with_many($relation, $fk, $lk, $callback)` | One-to-many relation |
-| `join($table, $condition)` | INNER JOIN |
-| `where_exists_relation($relation, $fk, $lk, $callback)` | WHERE EXISTS |
-| `where_not_exists_relation($relation, $fk, $lk, $callback)` | WHERE NOT EXISTS |
-| `where_has($relation, $fk, $lk, $callback, $operator, $count)` | WHERE HAS |
-| `where_doesnt_have($relation, $fk, $lk, $callback)` | WHERE DOESN'T HAVE |
-
-### Aggregates
-| Method | Description |
-|--------|-------------|
-| `with_count($relation, $fk, $lk, $callback)` | Count related records |
-| `with_sum($relation, $fk, $lk, $column, $isCustom, $callback)` | Sum of related column |
-| `with_avg($relation, $fk, $lk, $column, $isCustom, $callback)` | Average of column |
-| `with_max($relation, $fk, $lk, $column, $isCustom, $callback)` | Maximum value |
-| `with_min($relation, $fk, $lk, $column, $isCustom, $callback)` | Minimum value |
-| `with_calculation($relation, $fk, $lk, $expression, $callback)` | Complex calculation |
-| `where_aggregate($condition, $value)` | Filter by aggregate |
-| `or_where_aggregate($condition, $value)` | OR filter by aggregate |
-
-### Sorting & Pagination
-| Method | Description |
-|--------|-------------|
-| `order_by($column, $direction)` | ORDER BY clause |
-| `order_by_sequence($column, $array)` | ORDER BY custom sequence |
-| `latest($column)` | ORDER BY DESC (default: created_at) |
-| `oldest($column)` | ORDER BY ASC (default: created_at) |
-| `group_by($column)` | GROUP BY clause |
-| `limit($limit, $offset)` | LIMIT with OFFSET |
-| `calc_rows()` | Enable SQL_CALC_FOUND_ROWS |
-| `first($table)` | Get first result |
-| `exists($table)` | Check if records exist |
-| `doesnt_exist($table)` | Check if no records exist |
-
-### Execution
-| Method | Description |
-|--------|-------------|
-| `get($table, $limit, $offset)` | Execute SELECT query |
-| `get_where($table, $where, $limit, $offset)` | SELECT with WHERE |
-| `count_all_results($table, $reset)` | Count results |
-| `chunk($size, $callback, $table)` | Process by chunks |
-| `chunk_by_id($size, $callback, $column, $table)` | Process by ID chunks |
-| `query($sql, $binds)` | Execute raw query |
-| `transaction($callback, $strict)` | Execute within transaction |
-| `reset_query()` | Reset query builder |
-
-### Conditions & Logic
-| Method | Description |
-|--------|-------------|
-| `when($condition, $callback, $default)` | Conditional query |
-| `unless($condition, $callback, $default)` | Opposite of when |
-
----
-
-## 💡 Contoh Implementasi Lengkap
-
-### Contoh 1: User Management dengan Relations
-
-```php
-<? php
-class User_model extends CI_Model {
-    
-    private $table = 'users';
-    
-    public function get_user_profile($user_id)
-    {
-        return $this->db->with_one('profiles', 'user_id', 'id')
-                        ->with_many('addresses', 'user_id', 'id')
-                        ->with_one(['roles' => 'role'], 'role_id', 'id')
-                        ->where('id', $user_id)
-                        ->first($this->table);
-    }
-    
-    public function get_users_dashboard()
-    {
-        return $this->db->select(['id', 'name', 'email', 'created_at'])
-                        ->with_count('posts', 'user_id', 'id')
-                        ->with_count('comments', 'user_id', 'id')
-                        ->with_sum('orders', 'user_id', 'id', 'total_amount')
-                        ->with_avg('orders', 'user_id', 'id', 'total_amount')
-                        ->where('status', 'active')
-                        ->where_has('orders', 'user_id', 'id', null, '>=', 1)
-                        ->order_by('orders_sum', 'DESC')
-                        ->limit(50)
-                        ->get($this->table)
-                        ->result();
-    }
-    
-    public function search_active_users($search, $page = 1, $perPage = 20)
-    {
-        $offset = ($page - 1) * $perPage;
-        
-        $result = $this->db->select(['id', 'name', 'email', 'status'])
-                           ->search($search, ['name', 'email'])
-                           ->calc_rows()
-                           ->where('status', 'active')
-                           ->limit($perPage, $offset)
-                           ->get($this->table);
-        
-        return [
-            'data' => $result->result(),
-            'total' => $result->found_rows(),
-            'page' => $page,
-            'perPage' => $perPage,
-            'pages' => ceil($result->found_rows() / $perPage)
-        ];
-    }
-}
-```
-
-### Contoh 2: Advanced Reporting
-
-```php
-<?php
-class Report_model extends CI_Model {
-    
-    public function sales_report($start_date, $end_date)
-    {
-        return $this->db->select(['o.id', 'u.name', 'u.email'])
-                        ->with_sum(['order_items' => 'total_items'], 'order_id', 'id', null)
-                        ->with_calculation(
-                            ['order_items' => 'revenue'],
-                            'order_id',
-                            'id',
-                            'SUM(price * quantity)',
-                            function($query) {
-                                $query->where('status', 'completed');
-                            }
-                        )
-                        ->from('orders o')
-                        ->join('users u', 'u.id = o.user_id')
-                        ->where_between('o.created_at', [$start_date, $end_date])
-                        ->where_aggregate('revenue >', 0)
-                        ->order_by('revenue', 'DESC')
-                        ->get()
-                        ->result();
-    }
-    
-    public function product_performance()
-    {
-        return $this->db->select(['p.id', 'p.name'])
-                        ->with_count('order_items', 'product_id', 'id')
-                        ->with_sum(['order_items' => 'total_revenue'], 'product_id', 'id', 'price * quantity', true)
-                        ->with_avg(['order_items' => 'avg_rating'], 'product_id', 'id', null)
-                        ->from('products p')
-                        ->where_has('order_items', 'product_id', 'id', null, '>=', 10)
-                        ->where_aggregate('total_revenue >', 100000)
-                        ->order_by('total_revenue', 'DESC')
-                        ->limit(100)
-                        ->get()
-                        ->result();
-    }
-}
-```
-
-### Contoh 3: Data Processing dengan Chunking
-
-```php
-<? php
-class Batch_processor extends CI_Model {
-    
-    public function send_monthly_reports()
-    {
-        $this->db->where('email_notifications', 1)
-                 ->chunk(500, function($users) {
-                     foreach ($users as $user) {
-                         $report = $this->generate_report($user->id);
-                         $this->send_email($user->email, $report);
-                     }
-                     log_message('info', 'Sent reports for ' . count($users) . ' users');
-                 }, 'users');
-    }
-    
-    public function cleanup_old_records()
-    {
-        $cutoff_date = date('Y-m-d', strtotime('-90 days'));
-        
-        $count = $this->db->where('created_at <', $cutoff_date)
-                          ->where('archived', 0)
-                          ->chunk_by_id(1000, function($records) {
-                              foreach ($records as $record) {
-                                  $this->db->where('id', $record->id)
-                                          ->update('logs', ['archived' => 1]);
-                              }
-                          }, 'id', 'logs');
-        
-        log_message('info', 'Archived ' . $count . ' old records');
+    // Loop through latest orders
+    foreach ($user->orders as $order) {
+        echo $order->id;
+        echo $order->total_amount;
     }
 }
 ```
 
 ---
 
-## 🐛 Troubleshooting
+## Notes
 
-### Issue: Relations not loading
-
-**Solusi:**
-```php
-// Pastikan foreign key dan local key sesuai
-$this->db->with_one('users', 'user_id', 'id')  // ✅ Correct
-         ->from('posts')
-         ->get();
-
-// Pastikan callback di akhir parameter
-$this->db->with_one('users', 'user_id', 'id', function($query) {
-    $query->where('status', 'active');
-})
-->from('posts')
-->get();
-```
-
-### Issue: SQL Injection Warning
-
-**Solusi:**
-CustomQueryBuilder mengvalidasi semua input.  Jika ada warning, pastikan:
-```php
-// ✅ Gunakan column names yang valid
-$this->db->where('user_id', $id);
-
-// ❌ Jangan gunakan dynamic column names tanpa validasi
-$column = $_GET['column'];  // Bahaya!
-$this->db->where($column, $value);
-
-// ✅ Validasi terlebih dahulu
-$allowed_columns = ['name', 'email', 'status'];
-if (in_array($column, $allowed_columns)) {
-    $this->db->where($column, $value);
-}
-```
-
-### Issue: Memory issue dengan large datasets
-
-**Solusi:**
-```php
-// ✅ Gunakan chunk instead of get()
-$this->db->chunk(1000, function($users) {
-    // Process in batches
-}, 'users');
-
-// ✅ Untuk SELECT hasil besar, gunakan limit
-$this->db->limit(1000)->offset(0)->get();
-```
-
-### Issue: Aggregate function error
-
-**Solusi:**
-```php
-// Pastikan custom expression valid
-// ✅ Valid
-$this->db->with_sum('items', 'order_id', 'id', 'price * quantity', true);
-
-// ❌ Invalid - dangerous pattern
-$this->db->with_sum('items', 'order_id', 'id', 'SELECT * FROM...  ', true);
-
-// ✅ Valid - allowed functions
-$allowed = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'ROUND', 'FLOOR', 'DATEDIFF', etc];
-```
-
-### Issue: Metode 2 (Injection) tidak berfungsi
-
-**Solusi:**
-- Pastikan file `CustomQueryBuilder.php` sudah ada di `system/core/`
-- Verifikasi require statement di `system/database/DB.php` sudah ditambahkan
-- Cek bahwa tidak ada conflict dengan class definitions lain
-- Test dengan membuat controller sederhana untuk verify functionality
-- Jika masih error, coba rollback ke Metode 1 (Standard Installation)
+- **Performance**: Eager loading significantly reduces database queries (N+1 problem prevention)
+- **Security**: All inputs are validated and escaped automatically
+- **Compatibility**: Works with existing CodeIgniter 3.x applications
+- **Result Format**: Use `result()` for objects, `result_array()` for arrays
+- **Debugging**: Enable debug mode to see generated SQL queries
 
 ---
 
-## 🤝 Kontribusi
+## Version Information
 
-Kami menyambut kontribusi!  Silakan:
-
-1. Fork repository
-2. Buat branch untuk feature (`git checkout -b feature/AmazingFeature`)
-3.  Commit changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push ke branch (`git push origin feature/AmazingFeature`)
-5.  Buka Pull Request
+- **Version**: 1.0.0
+- **Author**: Danar Ardiwinanto
+- **Framework**: CodeIgniter 3.x
+- **File**: `system/core/CustomQueryBuilder.php`
+- **Lines**: 5667
 
 ---
 
-## 📝 Lisensi
+## Support
 
-CustomQueryBuilder dilisensikan di bawah MIT License.  Lihat file [LICENSE](LICENSE) untuk detail lengkap.
-
----
-
-## 👤 Author
-
-**Danar Reichi**
-- GitHub: [@danarreichi](https://github.com/danarreichi)
-- Email: danar.ardiwinanto@gmail.com
-
----
-
-## ❤️ Acknowledgments
-
-- CodeIgniter 3 Community
-- Database Query Builder inspirasi: Laravel Query Builder
-- Contributors dan issue reporters
-
----
-
-**Last Updated**: December 2, 2025  
-**Version**: 1.0.0  
-**Maintained**: Yes ✅
+For issues or questions related to CustomQueryBuilder, contact the development team or refer to the inline documentation within the source file.
