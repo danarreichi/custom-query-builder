@@ -56,11 +56,46 @@ trait QueryValidationTrait
      * @var array
      */
     protected static $ALLOWED_SQL_FUNCTIONS = [
-        'SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'ROUND', 'FLOOR', 'CEIL', 'ABS',
-        'COALESCE', 'IFNULL', 'NULLIF', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
-        'DATEDIFF', 'TIMESTAMPDIFF', 'DAY', 'MONTH', 'YEAR', 'NOW', 'DATE',
-        'CONCAT', 'SUBSTRING', 'TRIM', 'UPPER', 'LOWER', 'LENGTH', 'REPLACE',
-        'CAST', 'CONVERT', 'IF', 'AND', 'OR', 'IS', 'NOT', 'NULL', 'AS'
+        'SUM',
+        'AVG',
+        'COUNT',
+        'MAX',
+        'MIN',
+        'ROUND',
+        'FLOOR',
+        'CEIL',
+        'ABS',
+        'COALESCE',
+        'IFNULL',
+        'NULLIF',
+        'CASE',
+        'WHEN',
+        'THEN',
+        'ELSE',
+        'END',
+        'DATEDIFF',
+        'TIMESTAMPDIFF',
+        'DAY',
+        'MONTH',
+        'YEAR',
+        'NOW',
+        'DATE',
+        'CONCAT',
+        'SUBSTRING',
+        'TRIM',
+        'UPPER',
+        'LOWER',
+        'LENGTH',
+        'REPLACE',
+        'CAST',
+        'CONVERT',
+        'IF',
+        'AND',
+        'OR',
+        'IS',
+        'NOT',
+        'NULL',
+        'AS'
     ];
 
     /**
@@ -212,7 +247,7 @@ trait QueryValidationTrait
             if (preg_match($pattern, $expression)) return false;
         }
         if (!$this->are_parentheses_balanced($expression)) return false;
-        if (strlen($expression) > 500) return false;
+        if (strlen($expression) > 2000) return false;
         return true;
     }
 
@@ -263,33 +298,45 @@ trait QueryValidationTrait
     protected function is_valid_calculation_expression($expression)
     {
         if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`%<>=\'"]+$/')) return false;
-        
+
         // Block dangerous SQL keywords (but allow CASE, WHEN, THEN, ELSE, END)
-        $dangerous_keywords = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'UNION', 'EXEC', 
-                            'EXECUTE', 'CREATE', 'ALTER', 'TRUNCATE', 'INTO', 'VALUES'];
+        $dangerous_keywords = [
+            'INSERT',
+            'UPDATE',
+            'DELETE',
+            'DROP',
+            'UNION',
+            'EXEC',
+            'EXECUTE',
+            'CREATE',
+            'ALTER',
+            'TRUNCATE',
+            'INTO',
+            'VALUES'
+        ];
         foreach ($dangerous_keywords as $keyword) {
             if (preg_match('/\b' . $keyword . '\b/i', $expression)) return false;
         }
-        
+
         // Remove quoted strings temporarily for token validation
         $expression_without_strings = preg_replace('/"[^"]*"/', 'STRING_LITERAL', $expression);
         $expression_without_strings = preg_replace("/'[^']*'/", 'STRING_LITERAL', $expression_without_strings);
-        
+
         // Validate tokens (exclude string literals)
         $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression_without_strings, -1, PREG_SPLIT_NO_EMPTY);
         foreach ($tokens as $token) {
             // Skip string literal placeholders
             if ($token === 'STRING_LITERAL') continue;
-            
+
             // Allow numbers
             if (is_numeric($token)) continue;
-            
+
             // Allow SQL functions
             if ($this->is_allowed_sql_function($token)) continue;
-            
+
             // Allow TRUE/FALSE and other safe keywords
             if (in_array(strtoupper($token), ['TRUE', 'FALSE', 'DISTINCT', 'HOUR', 'MINUTE', 'SECOND', 'CURDATE', 'CURTIME', 'POW', 'SQRT', 'MOD'])) continue;
-            
+
             // Validate column names
             if (!$this->is_valid_column_name($token)) return false;
         }
@@ -402,6 +449,28 @@ trait QueryValidationTrait
         if (count($keys1) !== count($keys2)) {
             throw new InvalidArgumentException($message);
         }
+    }
+
+    /**
+     * Quote a column reference for use inside an aggregate function.
+     *
+     * When $column already contains a table qualifier (e.g. "tbl.col") it is
+     * quoted as `tbl`.`col`.  Otherwise it is prefixed with $relation_ref
+     * producing `relation_ref`.`col`.
+     *
+     * This handles both plain tables AND subquery aliases transparently.
+     *
+     * @param string $column       Column name, optionally table-qualified
+     * @param string $relation_ref Table name or subquery alias to use as prefix
+     * @return string              Safely quoted SQL fragment
+     */
+    protected function _quote_agg_column($column, $relation_ref)
+    {
+        if (strpos($column, '.') !== false) {
+            list($tbl, $col) = explode('.', $column, 2);
+            return '`' . $tbl . '`.`' . $col . '`';
+        }
+        return '`' . $relation_ref . '`.`' . $column . '`';
     }
 }
 
@@ -692,6 +761,11 @@ class NestedQueryBuilder
      * @var array Array of pending WHERE aggregate conditions
      */
     public $pending_where_aggregates = [];
+
+    /**
+     * @var array Array of pending derived-table JOIN aggregates
+     */
+    public $pending_join_aggregates = [];
 
     /**
      * @var object Database instance
@@ -1182,8 +1256,8 @@ class NestedQueryBuilder
             'custom_calculation' => 'custom'
         ];
 
-        $aggregate_type = isset($type_mapping[$aggregate_config['type']]) 
-            ? $type_mapping[$aggregate_config['type']] 
+        $aggregate_type = isset($type_mapping[$aggregate_config['type']])
+            ? $type_mapping[$aggregate_config['type']]
             : 'custom';
 
         // Use the aggregate configuration to build where_aggregate
@@ -1612,6 +1686,222 @@ class NestedQueryBuilder
     {
         return $this->add_where_exists_relation_internal('OR', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
     }
+
+    // =================================================================
+    // JOIN AGGREGATE METHODS (Derived Table JOIN)
+    // Mirror of CustomQueryBuilder's join_* methods for use inside
+    // with_many / with_one callbacks.
+    // =================================================================
+
+    /**
+     * Internal helper — register a derived-table JOIN aggregate
+     *
+     * @param string        $type       Aggregate type: count|sum|avg|min|max
+     * @param string        $relation   Related table name or raw SQL subquery (e.g. "(SELECT ...) alias")
+     * @param string|array  $foreignKey FK column(s) in the relation table
+     * @param string|array  $localKey   Local key column(s) in the main table
+     * @param string|null   $column     Column to aggregate (null for COUNT)
+     * @param string|null   $alias      Result alias (auto-generated if null)
+     * @param callable|null $callback   Optional callback to add WHERE inside derived table
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_join_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $alias = null, $callback = null)
+    {
+        // Detect raw SQL subquery passed as relation (e.g. "(SELECT ...) alias")
+        $is_subquery_relation = ltrim($relation)[0] === '(';
+
+        if (!$is_subquery_relation && !$this->is_valid_table_name($this->extract_table_name($relation))) {
+            throw new InvalidArgumentException("join_{$type}: invalid relation table name '" . htmlspecialchars($relation) . "'");
+        }
+
+        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
+        $local_keys   = is_array($localKey)   ? $localKey   : [$localKey];
+
+        if (count($foreign_keys) !== count($local_keys)) {
+            throw new InvalidArgumentException("join_{$type}: foreign key count must match local key count.");
+        }
+
+        $type_lower = strtolower($type);
+
+        // For subquery relations the "table name" used in agg functions and default
+        // aliases is the alias portion of the expression (e.g. "transaction_sub"),
+        // not the full subquery string.
+        $relation_ref = $is_subquery_relation
+            ? $this->extract_table_or_alias($relation)
+            : $relation;
+
+        switch ($type_lower) {
+            case 'count':
+                $agg_func      = 'COUNT(*)';
+                $default_alias = $relation_ref . '_count';
+                break;
+            case 'sum':
+                if (!$column) throw new InvalidArgumentException('join_sum: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_sum: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'SUM(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_sum';
+                break;
+            case 'avg':
+                if (!$column) throw new InvalidArgumentException('join_avg: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_avg: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'AVG(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_avg';
+                break;
+            case 'min':
+                if (!$column) throw new InvalidArgumentException('join_min: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_min: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'MIN(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_min';
+                break;
+            case 'max':
+                if (!$column) throw new InvalidArgumentException('join_max: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_max: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'MAX(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_max';
+                break;
+            case 'custom_calculation':
+                if (!$column) throw new InvalidArgumentException('join_calculation: $expression is required.');
+                if (!$this->is_valid_calculation_expression($column)) {
+                    throw new InvalidArgumentException("join_calculation: invalid expression '" . htmlspecialchars($column) . "'");
+                }
+                $agg_func      = $column; // raw expression, e.g. SUM(a) / SUM(b) * 100
+                $default_alias = $relation_ref . '_calculation';
+                break;
+            default:
+                throw new InvalidArgumentException("Invalid join aggregate type: {$type}");
+        }
+
+        $this->pending_join_aggregates[] = [
+            'type'        => $type_lower,
+            'relation'    => $relation,
+            'foreign_key' => $foreign_keys,
+            'local_key'   => $local_keys,
+            'aggregate'   => $agg_func,
+            'alias'       => $alias ?: $default_alias,
+            'callback'    => $callback,
+        ];
+
+        return $this;
+    }
+
+    /**
+     * Derived-table JOIN COUNT inside a nested relation callback
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_count($relation, $foreignKey, $localKey, $callback = null)
+    {
+        $alias         = is_array($relation) ? current($relation) : null;
+        $relation_name = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('count', $relation_name, $foreignKey, $localKey, null, $alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN SUM inside a nested relation callback
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to SUM
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_sum($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : $relation;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('sum', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN AVG inside a nested relation callback
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to AVG
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_avg($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : $relation;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('avg', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN MIN inside a nested relation callback
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to MIN
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_min($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : $relation;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('min', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN MAX inside a nested relation callback
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to MAX
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_max($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : $relation;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('max', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN CALCULATION inside a nested relation callback
+     *
+     * Mirror of CustomQueryBuilder::join_calculation() for use inside
+     * with_many() / with_one() callbacks.
+     *
+     * Example:
+     * $this->db->with_many('orders', 'user_id', 'id', function($q) {
+     *     $q->join_calculation(
+     *         ['order_items' => 'item_total'],
+     *         'order_id', 'id',
+     *         'SUM(price * quantity)'
+     *     );
+     * })->get('users');
+     *
+     * @param string|array  $relation    Relation table name or ['table' => 'alias']
+     * @param string|array  $foreignKey  FK column(s) in the relation table
+     * @param string|array  $localKey    PK/local column(s) in the main table
+     * @param string        $expression  Mathematical expression with aggregate functions
+     * @param callable|null $callback    Optional WHERE conditions inside derived table
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function join_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : null;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('custom_calculation', $relation_name, $foreignKey, $localKey, $expression, $resolved_alias, $callback);
+    }
 }
 
 /**
@@ -1654,6 +1944,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
     protected $pending_aggregates = [];
 
     /**
+     * @var array Array of pending join aggregate functions (derived table JOIN approach)
+     */
+    protected $pending_join_aggregates = [];
+
+    /**
      * @var array Array of pending WHERE aggregate conditions
      */
     protected $pending_where_aggregates = [];
@@ -1662,6 +1957,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @var array Queue of pending WHERE operations in order (for proper grouping)
      */
     protected $pending_where_queue = [];
+
+    /**
+     * @var array Queue of pending group() / or_group() callbacks (deferred until get())
+     */
+    protected $pending_groups = [];
 
     /**
      * @var int Counter to track if we're inside a group() callback context
@@ -1682,6 +1982,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @var string|null Temporary storage for table name from get() method
      */
     protected $_temp_table_name = null;
+
+    /**
+     * @var array Executed queries including eager loading queries.
+     *            Populated during get() calls that use eager loading.
+     */
+    protected $_executed_queries = [];
 
     /**
      * Get the parent table name or alias from current query
@@ -1740,6 +2046,72 @@ class CustomQueryBuilder extends CI_DB_query_builder
         return parent::where($key, $value, $escape);
     }
 
+    /**
+     * WHERE IN
+     *
+     * Generates a WHERE field IN('item', 'item') SQL query,
+     * joined with 'AND' if appropriate.
+     *
+     * @param	string	$key	The field to search
+     * @param	array	$values	The values searched on
+     * @param	bool	$escape
+     * @return	CustomQueryBuilder
+     */
+    public function where_in($key = NULL, $values = NULL, $escape = NULL)
+    {
+        return parent::where_in($key, $values, $escape);
+    }
+
+    /**
+     * OR WHERE IN
+     *
+     * Generates a WHERE field IN('item', 'item') SQL query,
+     * joined with 'OR' if appropriate.
+     *
+     * @param	string	$key	The field to search
+     * @param	array	$values	The values searched on
+     * @param	bool	$escape
+     * @return	CustomQueryBuilder
+     */
+    public function or_where_in($key = NULL, $values = NULL, $escape = NULL)
+    {
+        return parent::or_where_in($key, $values, $escape);
+    }
+
+    /**
+     * WHERE NOT IN
+     *
+     * Generates a WHERE field NOT IN('item', 'item') SQL query,
+     * joined with 'AND' if appropriate.
+     *
+     * @param	string	$key	The field to search
+     * @param	array	$values	The values searched on
+     * @param	bool	$escape
+     * @return	CustomQueryBuilder
+     */
+    public function where_not_in($key = NULL, $values = NULL, $escape = NULL)
+    {
+        return parent::where_not_in($key, $values, $escape);
+    }
+
+	// --------------------------------------------------------------------
+
+    /**
+     * OR WHERE NOT IN
+     *
+     * Generates a WHERE field NOT IN('item', 'item') SQL query,
+     * joined with 'OR' if appropriate.
+     *
+     * @param	string	$key	The field to search
+     * @param	array	$values	The values searched on
+     * @param	bool	$escape
+     * @return	CustomQueryBuilder
+     */
+    public function or_where_not_in($key = NULL, $values = NULL, $escape = NULL)
+    {
+        return parent::or_where_not_in($key, $values, $escape);
+    }
+
     // --------------------------------------------------------------------
 
     /**
@@ -1765,10 +2137,45 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Set temp table name for pending where_exists_relation processing
         if (is_string($from)) {
             $this->_temp_table_name = $from;
+            $trimmed_from = trim($from);
+            if ($this->is_raw_subquery_from($trimmed_from)) {
+                $this->_track_aliases($trimmed_from);
+                $this->qb_from[] = $trimmed_from;
+                return $this;
+            }
         } elseif (is_array($from) && count($from) > 0) {
             $this->_temp_table_name = reset($from);
+
+            $safe_from = [];
+            foreach ($from as $item) {
+                if (is_string($item)) {
+                    $trimmed_item = trim($item);
+                    if ($this->is_raw_subquery_from($trimmed_item)) {
+                        $this->_track_aliases($trimmed_item);
+                        $this->qb_from[] = $trimmed_item;
+                        continue;
+                    }
+                }
+                $safe_from[] = $item;
+            }
+
+            if (empty($safe_from)) return $this;
+            if (count($safe_from) === 1) return parent::from(reset($safe_from));
+            return parent::from($safe_from);
         }
         return parent::from($from);
+    }
+
+    /**
+     * Detect raw subquery FROM expression: (SELECT ...) alias
+     *
+     * @param string $from
+     * @return bool
+     */
+    protected function is_raw_subquery_from($from)
+    {
+        return is_string($from)
+            && preg_match('/^\(.*\)\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*$/is', $from);
     }
 
     /**
@@ -1847,7 +2254,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         if ($condition) {
             $callback($this, $condition);
-            
+
             // Process pending where_exists if we're NOT inside a group context
             // If we're inside a group, let the group() method handle it
             if ($this->_in_group_context === 0) {
@@ -1856,7 +2263,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 if (empty($parent_table) && !empty($this->qb_from)) {
                     $parent_table = $this->qb_from[0];
                 }
-                
+
                 // Process queue if we have pending operations and not in group context
                 if (!empty($this->pending_where_queue)) {
                     $this->process_pending_where_queue($parent_table);
@@ -1865,14 +2272,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
         } else {
             if ($default) {
                 $default($this, $condition);
-                
+
                 // Same processing for default callback
                 if ($this->_in_group_context === 0) {
                     $parent_table = $this->_temp_table_name;
                     if (empty($parent_table) && !empty($this->qb_from)) {
                         $parent_table = $this->qb_from[0];
                     }
-                    
+
                     if (!empty($this->pending_where_queue)) {
                         $this->process_pending_where_queue($parent_table);
                     }
@@ -2179,8 +2586,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Add condition
         $clause = "{$exists_type} ({$compiled_subquery})";
-        return $condition_type === 'OR' ? 
-            $this->or_where($clause, null, false) : 
+        return $condition_type === 'OR' ?
+            $this->or_where($clause, null, false) :
             $this->where($clause, null, false);
     }
 
@@ -2432,7 +2839,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @param string $relation Related table name
      * @param string|array $foreignKey Foreign key(s)
      * @param string|array $localKey Local key(s)
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback to modify relation query
+     * @param callable(CustomQueryBuilder): void|null|string $callback Optional callback to modify relation query.
+     *        If provided as a string it will be interpreted as the comparison operator
+     *        (see below) and the callback will be set to null. This lets you omit the
+     *        callback when you only want to specify operator/count.
      * @param string $operator Comparison operator (>=, =, >, <, <=, !=, <>)
      * @param int $count Count to compare against
      * @return $this
@@ -2440,6 +2850,22 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_has($relation, $foreignKey, $localKey, $callback = null, $operator = '>=', $count = 1)
     {
+        if (is_string($callback)) {
+            $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+            if (!in_array($callback, $allowed_operators, true)) {
+                throw new InvalidArgumentException("Invalid operator: {$callback}. Allowed operators: " . implode(', ', $allowed_operators));
+            }
+            $count = $operator;
+            $operator = $callback;
+            $callback = null;
+        } else {
+            $callback = $callback;
+        }
+        // Optimasi: jika hanya cek keberadaan record (>= 1), gunakan WHERE EXISTS yang lebih cepat
+        if ($operator === '>=' && (int) $count === 1) {
+            return $this->where_exists_relation($relation, $foreignKey, $localKey, $callback);
+        }
+
         // VALIDASI KEAMANAN: Validasi relation name
         if (!$this->is_valid_table_name($relation)) {
             throw new InvalidArgumentException("Invalid relation name: {$relation}. Only alphanumeric characters and underscores are allowed.");
@@ -2492,7 +2918,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_doesnt_have($relation, $foreignKey, $localKey, $callback = null)
     {
-        return $this->where_has($relation, $foreignKey, $localKey, $callback, '=', 0);
+        return $this->where_not_exists_relation($relation, $foreignKey, $localKey, $callback);
     }
 
     /**
@@ -2501,13 +2927,31 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @param string $relation Related table name
      * @param string|array $foreignKey Foreign key(s)
      * @param string|array $localKey Local key(s)
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback to modify relation query
+     * @param callable(CustomQueryBuilder): void|null|string $callback Optional callback to modify relation query.
+     *        When specified as a string it is treated as the comparison operator and
+     *        the callback is ignored, enabling succinct operator/count syntax.
      * @param string $operator Comparison operator (>=, =, >, <, <=, !=, <>)
      * @param int $count Count to compare against
      * @return $this
      */
     public function or_where_has($relation, $foreignKey, $localKey, $callback = null, $operator = '>=', $count = 1)
     {
+        if (is_string($callback)) {
+            $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+            if (!in_array($callback, $allowed_operators, true)) {
+                throw new InvalidArgumentException("Invalid operator: {$callback}. Allowed operators: " . implode(', ', $allowed_operators));
+            }
+            $count = $operator;
+            $operator = $callback;
+            $callback = null;
+        } else {
+            $callback = $callback;
+        }
+        // Optimasi: jika hanya cek keberadaan record (>= 1), gunakan OR WHERE EXISTS yang lebih cepat
+        if ($operator === '>=' && (int) $count === 1) {
+            return $this->or_where_exists_relation($relation, $foreignKey, $localKey, $callback);
+        }
+
         $processed_local_keys = $this->process_keys($localKey, 'local key');
         $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key');
 
@@ -2535,7 +2979,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_where_doesnt_have($relation, $foreignKey, $localKey, $callback = null)
     {
-        return $this->or_where_has($relation, $foreignKey, $localKey, $callback, '=', 0);
+        return $this->or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback);
     }
 
     /**
@@ -2785,32 +3229,18 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         if (!is_callable($callback)) throw new InvalidArgumentException('Callback must be callable');
 
-        // Track that we're inside a group context
-        $this->_in_group_context++;
-        
-        $this->group_start();
-
-        try {
-            $callback($this);
-            
-            // Process any pending where_exists that were added inside this group
-            // Try to get parent table from qb_from if _temp_table_name is not set
-            $parent_table = $this->_temp_table_name;
-            if (empty($parent_table) && !empty($this->qb_from)) {
-                $parent_table = $this->qb_from[0];
-            }
-            // Process queue even if parent_table is null (local key might already have table prefix)
-            if (!empty($this->pending_where_queue)) {
-                $this->process_pending_where_queue($parent_table);
-            }
-        } catch (Exception $e) {
-            $this->_in_group_context--;
-            $this->group_end();
-            throw $e;
+        // Execute immediately when the table is already known (from() was called or we are
+        // already inside process_pending_groups()), so the WHERE clause order is preserved.
+        // Only defer when neither is true (table will be supplied later via get('table')).
+        if (
+            $this->_in_group_context > 0
+            || !empty($this->_temp_table_name)
+            || !empty($this->qb_from)
+        ) {
+            return $this->_execute_group_immediately('AND', $callback);
         }
 
-        $this->_in_group_context--;
-        $this->group_end();
+        $this->pending_groups[] = ['type' => 'AND', 'callback' => $callback];
         return $this;
     }
 
@@ -2844,32 +3274,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         if (!is_callable($callback)) throw new InvalidArgumentException('Callback must be callable');
 
-        // Track that we're inside a group context
-        $this->_in_group_context++;
-        
-        $this->or_group_start();
-
-        try {
-            $callback($this);
-            
-            // Process any pending where_exists that were added inside this group
-            // Try to get parent table from qb_from if _temp_table_name is not set
-            $parent_table = $this->_temp_table_name;
-            if (empty($parent_table) && !empty($this->qb_from)) {
-                $parent_table = $this->qb_from[0];
-            }
-            // Process queue even if parent_table is null (local key might already have table prefix)
-            if (!empty($this->pending_where_queue)) {
-                $this->process_pending_where_queue($parent_table);
-            }
-        } catch (Exception $e) {
-            $this->_in_group_context--;
-            $this->group_end();
-            throw $e;
+        // Same as group() — execute immediately when the table is already known.
+        if (
+            $this->_in_group_context > 0
+            || !empty($this->_temp_table_name)
+            || !empty($this->qb_from)
+        ) {
+            return $this->_execute_group_immediately('OR', $callback);
         }
 
-        $this->_in_group_context--;
-        $this->group_end();
+        $this->pending_groups[] = ['type' => 'OR', 'callback' => $callback];
         return $this;
     }
 
@@ -3245,6 +3659,418 @@ class CustomQueryBuilder extends CI_DB_query_builder
         return $this->add_aggregate('min', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
     }
 
+    // =================================================================
+    // JOIN AGGREGATE METHODS (Derived Table JOIN — lighter DB load)
+    // Pre-aggregates the relation table in a single subquery then JOINs
+    // back to the main table — scans relation table once, regardless of
+    // how many rows the main query returns.
+    // Use these instead of with_sum/with_count/etc. when result sets
+    // are large and you only need the scalar aggregate value.
+    // =================================================================
+
+    /**
+     * Internal helper — register a derived-table JOIN aggregate
+     *
+     * @param string        $type       Aggregate type: count|sum|avg|min|max
+     * @param string        $relation   Related table name or raw SQL subquery (e.g. "(SELECT ...) alias")
+     * @param string|array  $foreignKey FK column(s) in the relation table
+     * @param string|array  $localKey   Local key column(s) in the main table
+     * @param string|null   $column     Column to aggregate (null for COUNT)
+     * @param string|null   $alias      Result alias (auto-generated if null)
+     * @param callable|null $callback   Optional callback to add WHERE inside derived table
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_join_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $alias = null, $callback = null)
+    {
+        // Detect raw SQL subquery passed as relation (e.g. "(SELECT ...) alias")
+        $is_subquery_relation = ltrim($relation)[0] === '(';
+
+        if (!$is_subquery_relation && !$this->is_valid_table_name($this->extract_table_name($relation))) {
+            throw new InvalidArgumentException("join_{$type}: invalid relation table name '" . htmlspecialchars($relation) . "'");
+        }
+
+        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
+        $local_keys   = is_array($localKey)   ? $localKey   : [$localKey];
+
+        if (count($foreign_keys) !== count($local_keys)) {
+            throw new InvalidArgumentException("join_{$type}: foreign key count must match local key count.");
+        }
+
+        $type_lower = strtolower($type);
+
+        // For subquery relations the "table name" used in agg functions and default
+        // aliases is the alias portion of the expression (e.g. "transaction_sub"),
+        // not the full subquery string.
+        $relation_ref = $is_subquery_relation
+            ? $this->extract_table_or_alias($relation)
+            : $relation;
+
+        switch ($type_lower) {
+            case 'count':
+                $agg_func      = 'COUNT(*)';
+                $default_alias = $relation_ref . '_count';
+                break;
+            case 'sum':
+                if (!$column) throw new InvalidArgumentException('join_sum: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_sum: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'SUM(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_sum';
+                break;
+            case 'avg':
+                if (!$column) throw new InvalidArgumentException('join_avg: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_avg: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'AVG(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_avg';
+                break;
+            case 'min':
+                if (!$column) throw new InvalidArgumentException('join_min: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_min: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'MIN(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_min';
+                break;
+            case 'max':
+                if (!$column) throw new InvalidArgumentException('join_max: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_max: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'MAX(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_max';
+                break;
+            case 'custom_calculation':
+                if (!$column) throw new InvalidArgumentException('join_calculation: $expression is required.');
+                if (!$this->is_valid_calculation_expression($column)) {
+                    throw new InvalidArgumentException("join_calculation: invalid expression '" . htmlspecialchars($column) . "'");
+                }
+                $agg_func      = $column; // raw expression, e.g. SUM(a) / SUM(b) * 100
+                $default_alias = $relation_ref . '_calculation';
+                break;
+            default:
+                throw new InvalidArgumentException("Invalid join aggregate type: {$type}");
+        }
+
+        $this->pending_join_aggregates[] = [
+            'type'        => $type_lower,
+            'relation'    => $relation,
+            'foreign_key' => $foreign_keys,
+            'local_key'   => $local_keys,
+            'aggregate'   => $agg_func,
+            'alias'       => $alias ?: $default_alias,
+            'callback'    => $callback,
+        ];
+
+        return $this;
+    }
+
+    /**
+     * Build and apply all pending derived-table JOIN aggregates
+     *
+     * For each pending config, generates:
+     *   LEFT JOIN (
+     *       SELECT fk_col, AGG(col) AS alias
+     *       FROM relation [WHERE callback conditions] GROUP BY fk_col
+     *   ) AS `_jagg_alias` ON `_jagg_alias`.`fk_col` = `main`.`lk_col`
+     *
+     * @return void
+     */
+    protected function process_pending_join_aggregates()
+    {
+        if (empty($this->pending_join_aggregates)) return;
+
+        if (empty($this->qb_from)) {
+            throw new Exception('join_sum/join_count/etc. require a table. Call from() or provide table in get().');
+        }
+
+        $pending = $this->pending_join_aggregates;
+        $this->pending_join_aggregates = [];
+
+        // Resolve main table alias for ON condition
+        $mainTable = $this->qb_from[0];
+        if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $mainTable, $m)) {
+            $main_alias = isset($m[2]) && $m[2] !== '' ? $m[2] : $m[1];
+        } else {
+            $main_alias = trim(str_replace('`', '', $mainTable));
+        }
+
+        foreach ($pending as $config) {
+            $relation     = $config['relation'];
+            $foreign_keys = $config['foreign_key'];
+            $local_keys   = $config['local_key'];
+            $agg_func     = $config['aggregate'];
+            $alias        = $config['alias'];
+            $callback     = $config['callback'];
+
+            // Strip table prefix from FK — only bare column name lives inside derived table
+            // (used for ON condition and result-column alias)
+            $bare_fks = array_map(function ($fk) {
+                return strpos($fk, '.') !== false ? substr(strrchr($fk, '.'), 1) : $fk;
+            }, $foreign_keys);
+
+            // Determine relation alias (could be provided via "table alias" syntax)
+            // we'll use helper from QueryValidationTrait to keep logic consistent.
+            $relation_alias = $this->extract_table_or_alias($relation);
+
+            // Build qualified FK references for SELECT / GROUP BY.
+            // When the caller already supplied a table qualifier (e.g. "transaction_sdm.iduser"),
+            // honour it so the column resolves correctly inside the derived subquery.
+            // Fall back to relation_alias prefix when no qualifier is present.
+            $qualified_fks = array_map(function ($fk) use ($relation_alias) {
+                if (strpos($fk, '.') !== false) {
+                    list($tbl, $col) = explode('.', $fk, 2);
+                    return '`' . $tbl . '`.`' . $col . '`';
+                }
+                if ($relation_alias) {
+                    return '`' . $relation_alias . '`.`' . $fk . '`';
+                }
+                return '`' . $fk . '`';
+            }, $foreign_keys);
+
+            // Build derived subquery
+            $sub = clone $this;
+            $sub->reset_query();
+
+            // prefix foreign key select with qualified reference
+            $fk_select = implode(', ', $qualified_fks);
+
+            $select_str = $fk_select . ', ' . $agg_func . ' AS `' . $alias . '`';
+
+            // When relation is a raw subquery e.g. "(SELECT ...) alias", bypass CI's
+            // from() escaping — it would double-backtick the already-compiled SQL.
+            if (ltrim($relation)[0] === '(') {
+                $sub->select($select_str, false);
+                $sub->qb_from[] = $relation; // inject raw, no escaping
+            } else {
+                $sub->select($select_str, false)->from($relation);
+            }
+
+            if (is_callable($callback)) {
+                $callback($sub);
+            }
+
+            // group by also needs alias prefix to avoid ambiguity when the
+            // relation table is self‑joined inside the derived query.
+            // Use the same qualified references built for SELECT so that
+            // cross-table FKs (e.g. "transaction_sdm.iduser") are resolved correctly.
+            foreach ($qualified_fks as $qualified_fk) {
+                $sub->group_by($qualified_fk, false);
+            }
+
+            $subquery_sql = $sub->get_compiled_select();
+
+            // Unique join alias derived from result alias
+            $join_alias = '_jagg_' . preg_replace('/[^a-z0-9_]/', '_', strtolower($alias));
+
+            // Build ON condition
+            $on_parts = [];
+            for ($i = 0; $i < count($bare_fks); $i++) {
+                $bare_lk = strpos($local_keys[$i], '.') !== false
+                    ? substr(strrchr($local_keys[$i], '.'), 1)
+                    : $local_keys[$i];
+                $on_parts[] = "`{$join_alias}`.`{$bare_fks[$i]}` = `{$main_alias}`.`{$bare_lk}`";
+            }
+            $on_condition = implode(' AND ', $on_parts);
+
+            // LEFT JOIN derived table (escape=false preserves subquery syntax)
+            $this->join("({$subquery_sql}) `{$join_alias}`", $on_condition, 'left', false);
+
+            // If no explicit SELECT has been set yet, default to main table.*
+            // so all main-table columns are preserved alongside the aggregate.
+            if (empty($this->qb_select)) {
+                $this->select("`{$main_alias}`.*", false);
+            }
+
+            // Add result column to SELECT
+            $this->add_select("`{$join_alias}`.`{$alias}`", false);
+        }
+    }
+
+    /**
+     * Derived-table JOIN COUNT — lighter DB load than with_count()
+     *
+     * Scans the relation table once via GROUP BY instead of a correlated subquery per row.
+     *
+     * Example:
+     * $users = $this->db->join_count('orders', 'user_id', 'id')
+     *                   ->order_by('orders_count', 'DESC')
+     *                   ->get('users');
+     * // $user->orders_count
+     *
+     * // With alias + callback filter
+     * $users = $this->db->join_count(['orders' => 'completed_orders'], 'user_id', 'id', function($q) {
+     *     $q->where('status', 'completed');
+     * })->get('users');
+     * // $user->completed_orders
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_count($relation, $foreignKey, $localKey, $callback = null)
+    {
+        $alias         = is_array($relation) ? current($relation) : null;
+        $relation_name = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('count', $relation_name, $foreignKey, $localKey, null, $alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN SUM — lighter DB load than with_sum()
+     *
+     * Scans the relation table once via GROUP BY instead of a correlated subquery per row.
+     *
+     * Example:
+     * $users = $this->db->join_sum('orders', 'user_id', 'id', 'total_amount')
+     *                   ->order_by('orders_sum', 'DESC')
+     *                   ->get('users');
+     * // $user->orders_sum
+     *
+     * // With alias
+     * $users = $this->db->join_sum(['orders' => 'total_spent'], 'user_id', 'id', 'total_amount')
+     *                   ->get('users');
+     * // $user->total_spent
+     *
+     * // With callback
+     * $users = $this->db->join_sum('orders', 'user_id', 'id', 'total_amount', null, function($q) {
+     *     $q->where('status', 'completed');
+     * })->get('users');
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to SUM
+     * @param string|null   $alias      Override result alias (optional when using array syntax)
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_sum($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : $relation;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('sum', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN AVG — lighter DB load than with_avg()
+     *
+     * Example:
+     * $users = $this->db->join_avg('orders', 'user_id', 'id', 'total_amount')->get('users');
+     * // $user->orders_avg
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to AVG
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_avg($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : $relation;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('avg', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN MIN — lighter DB load than with_min()
+     *
+     * Example:
+     * $users = $this->db->join_min('orders', 'user_id', 'id', 'total_amount')->get('users');
+     * // $user->orders_min
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to MIN
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_min($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : $relation;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('min', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN MAX — lighter DB load than with_max()
+     *
+     * Example:
+     * $users = $this->db->join_max(['orders' => 'highest_order'], 'user_id', 'id', 'total_amount')
+     *                   ->get('users');
+     * // $user->highest_order
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to MAX
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_max($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : $relation;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('max', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN CALCULATION — lighter DB load than with_calculation()
+     *
+     * Pre-aggregates the relation table once in a derived-table JOIN using a custom
+     * mathematical expression. Scans the relation table once regardless of how many
+     * rows the main query returns.
+     *
+     * Use this instead of with_calculation() when result sets are large.
+     *
+     * Example:
+     * // Efficiency: (finished / total) * 100
+     * $orders = $this->db->join_calculation(
+     *     ['order_items' => 'efficiency_percentage'],
+     *     'order_id', 'id',
+     *     '(SUM(finished_qty) / SUM(total_qty)) * 100'
+     * )->get('orders');
+     * // $order->efficiency_percentage
+     *
+     * // Profit margin with optional callback filter
+     * $products = $this->db->join_calculation(
+     *     ['sales' => 'profit_margin'],
+     *     'product_id', 'id',
+     *     '((SUM(selling_price * quantity) - SUM(cost_price * quantity)) / SUM(selling_price * quantity)) * 100',
+     *     function($q) { $q->where('status', 'completed'); }
+     * )->get('products');
+     * // $product->profit_margin
+     *
+     * // Production duration using DATEDIFF
+     * $transactions = $this->db->join_calculation(
+     *     ['transaction_step' => 'production_duration_days'],
+     *     'idtransaction_detail', 'idtransaction_detail',
+     *     'DATEDIFF(MAX(date), MIN(date))'
+     * )->get('transaction_detail');
+     *
+     * Supported in expression:
+     * - Basic math: +, -, *, /, %
+     * - Aggregate functions: SUM, AVG, COUNT, MIN, MAX
+     * - Date functions: DATEDIFF, TIMESTAMPDIFF
+     * - Conditional: CASE WHEN ... THEN ... END
+     * - Mathematical functions: ROUND, FLOOR, CEIL, ABS
+     *
+     * @param string|array  $relation    Relation table name or ['table' => 'alias']
+     * @param string|array  $foreignKey  FK column(s) in the relation table
+     * @param string|array  $localKey    PK/local column(s) in the main table
+     * @param string        $expression  Mathematical expression with aggregate functions
+     * @param callable|null $callback    Optional WHERE conditions inside derived table
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function join_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : null;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('custom_calculation', $relation_name, $foreignKey, $localKey, $expression, $resolved_alias, $callback);
+    }
+
     /**
      * Add calculated field using custom mathematical expression with aggregate functions
      * 
@@ -3609,6 +4435,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $original_debug = $this->db_debug;
         $this->db_debug = FALSE;
 
+        // Reset executed queries log for this new call
+        $this->_executed_queries = [];
+
         // Store table name temporarily for where_exists_relation to use
         if (!empty($table)) {
             $this->_temp_table_name = $table;
@@ -3618,7 +4447,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Handle SQL_CALC_FOUND_ROWS separately using compiled query
         if ($this->_calc_rows_enabled) return $this->get_with_calc_rows($limit, $offset);
 
+        $this->process_pending_groups();
         $this->process_pending_where_has();
+        $this->process_pending_join_aggregates();
         $this->process_pending_aggregates();
 
         // Process pending WHERE queue (handles grouping properly)
@@ -3655,7 +4486,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
     protected function get_with_calc_rows($limit = null, $offset = null)
     {
         // Process pending conditions first
+        $this->process_pending_groups();
         $this->process_pending_where_has();
+        $this->process_pending_join_aggregates();
         $this->process_pending_aggregates();
 
         // Process pending WHERE queue and WHERE EXISTS relations  
@@ -3663,6 +4496,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if (!empty($parent_table)) {
             $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
+            $this->process_pending_where_aggregates($parent_table);
         }
 
         // Check if we have eager loading relations
@@ -3677,6 +4511,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $backup_pending_where_has = $this->pending_where_has;
             $backup_pending_where_exists = $this->pending_where_exists;
             $backup_pending_where_queue = $this->pending_where_queue;
+            $backup_pending_where_aggregates = $this->pending_where_aggregates;
 
             // First, get the compiled query for counting (without eager loading)
             $count_query = clone $this;
@@ -3711,6 +4546,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->pending_where_has = $backup_pending_where_has;
             $this->pending_where_exists = $backup_pending_where_exists;
             $this->pending_where_queue = $backup_pending_where_queue;
+            $this->pending_where_aggregates = $backup_pending_where_aggregates;
 
             // Reset calc_rows flag before eager loading
             $this->_calc_rows_enabled = false;
@@ -3775,10 +4611,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if ($limit !== null) $this->limit($limit, $offset);
 
         if (
-            !empty($this->with_relations)       ||
-            !empty($this->pending_where_has)    ||
-            !empty($this->pending_aggregates)   ||
-            !empty($this->pending_where_exists)
+            !empty($this->with_relations)         ||
+            !empty($this->pending_where_has)      ||
+            !empty($this->pending_aggregates)     ||
+            !empty($this->pending_join_aggregates) ||
+            !empty($this->pending_where_exists)   ||
+            !empty($this->pending_groups)
         ) return $this->get();
 
         $original_debug = $this->db_debug;
@@ -3790,6 +4628,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if ($error['code'] !== 0) $this->handle_database_error($error);
 
         $this->db_debug = $original_debug;
+
+        // Clear temporary table name (parent::get_where resets qb_from but not our custom property)
+        $this->_temp_table_name = null;
 
         return $result;
     }
@@ -3808,7 +4649,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->from($table);
         }
 
+        $this->process_pending_groups();
         $this->process_pending_where_has();
+        $this->process_pending_join_aggregates();
         $this->process_pending_aggregates();
 
         $parent_table = !empty($table) ? $table : $this->_temp_table_name;
@@ -3842,7 +4685,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->from($table);
         }
 
+        $this->process_pending_groups();
         $this->process_pending_where_has();
+        $this->process_pending_join_aggregates();
         $this->process_pending_aggregates();
 
         $parent_table = !empty($table) ? $table : $this->_temp_table_name;
@@ -3905,10 +4750,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         do {
             // Clone query untuk setiap chunk
             $chunk_query = clone $this;
-            
+
             // get() akan otomatis process semua pending operations
             $chunk_result = $chunk_query->get($table, $page_size, $offset);
-            
+
             $chunk_data = $chunk_result->result();
             $chunk_count = count($chunk_data);
 
@@ -3933,7 +4778,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
             // Stop jika chunk terakhir tidak penuh
             if ($chunk_count < $page_size) break;
-
         } while (true);
 
         return $total_processed;
@@ -3986,17 +4830,17 @@ class CustomQueryBuilder extends CI_DB_query_builder
         do {
             // Clone query dan tambahkan kondisi untuk ID
             $chunk_query = clone $this;
-            
+
             if ($last_id > 0) {
                 $chunk_query->where($column . ' >', $last_id);
             }
-            
+
             // Order by ID dan limit
             $chunk_query->order_by($column, 'ASC');
-            
+
             // get() akan otomatis process semua pending operations
             $chunk_result = $chunk_query->get($table, $page_size);
-            
+
             $chunk_data = $chunk_result->result();
             $chunk_count = count($chunk_data);
 
@@ -4010,34 +4854,33 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // Get last ID from chunk
             $last_record = end($chunk_data);
             if (isset($last_record->$column)) {
-            $last_id = $last_record->$column;
-        } else {
-            $last_array = (array) $last_record;
-            if (isset($last_array[$column])) {
-                $last_id = $last_array[$column];
+                $last_id = $last_record->$column;
             } else {
-                throw new InvalidArgumentException("Column '{$column}' not found in result set");
+                $last_array = (array) $last_record;
+                if (isset($last_array[$column])) {
+                    $last_id = $last_array[$column];
+                } else {
+                    throw new InvalidArgumentException("Column '{$column}' not found in result set");
+                }
             }
-        }
 
-        $total_processed += $chunk_count;
-        $page++;
+            $total_processed += $chunk_count;
+            $page++;
 
-        // Cleanup untuk mencegah memory leak
-        unset($chunk_query, $chunk_result, $chunk_data);
+            // Cleanup untuk mencegah memory leak
+            unset($chunk_query, $chunk_result, $chunk_data);
 
-        // Garbage collection setiap 10 page
-        if ($page % 10 === 0 && function_exists('gc_collect_cycles')) {
-            gc_collect_cycles();
-        }
+            // Garbage collection setiap 10 page
+            if ($page % 10 === 0 && function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
 
-        // Stop jika chunk terakhir tidak penuh
-        if ($chunk_count < $page_size) break;
+            // Stop jika chunk terakhir tidak penuh
+            if ($chunk_count < $page_size) break;
+        } while (true);
 
-    } while (true);
-
-    return $total_processed;
-}
+        return $total_processed;
+    }
 
     /**
      * Handle database errors and display formatted error messages
@@ -4174,7 +5017,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         // pending_where_has already cleared at the beginning to prevent recursion
-        $this->pending_aggregates = [];
     }
 
     /**
@@ -4226,6 +5068,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // Format: tablename_sub (e.g., transaction_detail_sub)
             $subquery_alias = $relation_table_name;
 
+            // Detect whether the relation is a raw SQL subquery (e.g. "(SELECT ...) alias")
+            $is_subquery_relation = ltrim($aggregate_config['relation'])[0] === '(';
+
             // Build aggregate function based on type
             $aggregate_function = '';
 
@@ -4252,7 +5097,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         }, $expression);
                         $aggregate_function = "SUM({$expression})";
                     } else {
-                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "SUM($column)";
                     }
                     break;
@@ -4261,7 +5106,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $expression = $aggregate_config['column'];
                         $aggregate_function = "AVG({$expression})";
                     } else {
-                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "AVG($column)";
                     }
                     break;
@@ -4270,7 +5115,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $expression = $aggregate_config['column'];
                         $aggregate_function = "MAX({$expression})";
                     } else {
-                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "MAX($column)";
                     }
                     break;
@@ -4279,7 +5124,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $expression = $aggregate_config['column'];
                         $aggregate_function = "MIN({$expression})";
                     } else {
-                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "MIN($column)";
                     }
                     break;
@@ -4289,8 +5134,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             // Use table alias in FROM clause for subquery
-            $subquery->select($aggregate_function)
-                ->from($table_name . ' ' . $subquery_alias);
+            $subquery->select($aggregate_function);
+            if ($is_subquery_relation) {
+                // Raw subquery: directly assign to qb_from to prevent CI from backtick-escaping it.
+                // The relation string is already well-formed, e.g. "(SELECT ...) transaction_sub".
+                $subquery->qb_from[] = $aggregate_config['relation'];
+            } else {
+                $subquery->from($table_name . ' ' . $subquery_alias);
+            }
 
             $foreign_keys = $aggregate_config['foreign_key'];
             $local_keys = $aggregate_config['local_key'];
@@ -4375,7 +5226,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         if (empty($this->pending_where_aggregates)) return;
 
-        if (empty($this->qb_from)) {
+        // A table context is required: either qb_from must be set OR a context_table
+        // must have been passed in (e.g. from _execute_group_immediately / chunk).
+        if (empty($this->qb_from) && empty($context_table)) {
             throw new Exception('WHERE aggregate conditions require a table to be set. Please call from() method or provide table in get() method.');
         }
 
@@ -4409,6 +5262,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $has_existing_alias = (strpos($aggregate_config['relation'], ' ') !== false) || (stripos($aggregate_config['relation'], ' AS ') !== false);
             $subquery_alias = ($has_existing_alias) ? $relation_table_name : $relation_table_name . '_agg';
 
+            // Detect whether the relation is a raw SQL subquery (e.g. "(SELECT ...) alias")
+            $is_subquery_relation = ltrim($aggregate_config['relation'])[0] === '(';
+
             // Build aggregate function based on type
             $aggregate_function = '';
 
@@ -4432,7 +5288,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         }, $expression);
                         $aggregate_function = "SUM({$expression})";
                     } else {
-                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "SUM($column)";
                     }
                     break;
@@ -4441,7 +5297,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $expression = $aggregate_config['column'];
                         $aggregate_function = "AVG({$expression})";
                     } else {
-                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "AVG($column)";
                     }
                     break;
@@ -4450,7 +5306,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $expression = $aggregate_config['column'];
                         $aggregate_function = "MAX({$expression})";
                     } else {
-                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "MAX($column)";
                     }
                     break;
@@ -4459,7 +5315,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $expression = $aggregate_config['column'];
                         $aggregate_function = "MIN({$expression})";
                     } else {
-                        $column = $this->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
+                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "MIN($column)";
                     }
                     break;
@@ -4469,8 +5325,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             // Use table alias in FROM clause for subquery
-            $subquery->select($aggregate_function)
-                ->from($table_name . ' ' . $subquery_alias);
+            $subquery->select($aggregate_function);
+            if ($is_subquery_relation) {
+                $subquery->qb_from[] = $aggregate_config['relation'];
+            } else {
+                $subquery->from($table_name . ' ' . $subquery_alias);
+            }
 
             $foreign_keys = $aggregate_config['foreign_key'];
             $local_keys = $aggregate_config['local_key'];
@@ -4525,7 +5385,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $compiled_subquery = $subquery->get_compiled_select();
             $operator = $aggregate_config['operator'];
             $value = $aggregate_config['value'];
-            
+
             // Handle BETWEEN operator specially
             $operator_upper = strtoupper(trim($operator));
             if (in_array($operator_upper, ['BETWEEN', 'NOT BETWEEN'])) {
@@ -4569,6 +5429,126 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         $this->process_pending_aggregates();
         return $this;
+    }
+
+    /**
+     * Internal helper — executes a group callback immediately with proper bracket wrapping.
+     * Used by group(), or_group(), and process_pending_groups().
+     *
+     * @param string $type 'AND' or 'OR'
+     * @param callable $callback
+     * @return $this
+     */
+    protected function _execute_group_immediately($type, $callback)
+    {
+        $this->_in_group_context++;
+
+        // If there are pending WHERE-aggregate conditions that were added
+        // before this deferred group, process them now so they appear
+        // outside the group parentheses. We snapshot and clear the
+        // pending list to avoid mixing with conditions produced inside
+        // the group callback.
+        if (!empty($this->pending_where_aggregates)) {
+            $parent_table = $this->_temp_table_name;
+            if (empty($parent_table) && !empty($this->qb_from)) {
+                $parent_table = $this->qb_from[0];
+            }
+
+            // Only flush if we know the parent table; otherwise leave them
+            // pending so get() can flush them once the table is available.
+            if (!empty($parent_table)) {
+                $backup_pending_where_aggregates = $this->pending_where_aggregates;
+                $this->pending_where_aggregates = [];
+
+                // Temporarily restore the backup into pending and process
+                // so the resulting WHERE conditions are added before the group.
+                $this->pending_where_aggregates = $backup_pending_where_aggregates;
+                $this->process_pending_where_aggregates($parent_table);
+
+                // Ensure no leftover pending aggregates remain
+                $this->pending_where_aggregates = [];
+            }
+        }
+        // Similar handling for pending where_has conditions. Conditions
+        // defined prior to the group should appear outside the parentheses
+        // rather than being swallowed by the empty group. We flush them
+        // before opening the bracket and clear the pending list so that
+        // any new where_has calls inside the callback will be processed
+        // later (inside the group) separately.
+        if (!empty($this->pending_where_has)) {
+            $backup_pending_where_has = $this->pending_where_has;
+            $this->pending_where_has = [];
+
+            // process immediately (this will reset pending_where_has again)
+            $this->process_pending_where_has();
+
+            // ensure nothing remains
+            $this->pending_where_has = [];
+        }
+
+        if ($type === 'OR') {
+            $this->or_group_start();
+        } else {
+            $this->group_start();
+        }
+
+        try {
+            $callback($this);
+
+            // Recursively flush any nested deferred groups before closing this bracket
+            if (!empty($this->pending_groups)) {
+                $this->process_pending_groups();
+            }
+
+            // Flush pending WHERE EXISTS queue accumulated inside the callback
+            if (!empty($this->pending_where_queue)) {
+                $parent_table = $this->_temp_table_name;
+                if (empty($parent_table) && !empty($this->qb_from)) {
+                    $parent_table = $this->qb_from[0];
+                }
+                $this->process_pending_where_queue($parent_table);
+            }
+
+            // Flush pending WHERE aggregates accumulated inside the callback.
+            // Only flush if we know the parent table; otherwise leave them
+            // pending so get() can flush them once the table is available.
+            if (!empty($this->pending_where_aggregates)) {
+                $parent_table = $this->_temp_table_name;
+                if (empty($parent_table) && !empty($this->qb_from)) {
+                    $parent_table = $this->qb_from[0];
+                }
+                if (!empty($parent_table)) {
+                    $this->process_pending_where_aggregates($parent_table);
+                }
+            }
+
+            // Flush pending where_has conditions generated inside the callback
+            // so they become part of the same grouped expression instead of
+            // being appended after the closing parenthesis.
+            if (!empty($this->pending_where_has)) {
+                $this->process_pending_where_has();
+            }
+        } catch (Exception $e) {
+            $this->_in_group_context--;
+            $this->group_end();
+            throw $e;
+        }
+
+        $this->_in_group_context--;
+        $this->group_end();
+        return $this;
+    }
+
+    protected function process_pending_groups()
+    {
+        if (empty($this->pending_groups)) return;
+
+        $groups = $this->pending_groups;
+        $this->pending_groups = [];
+
+        foreach ($groups as $group) {
+            $this->_execute_group_immediately($group['type'], $group['callback']);
+        }
     }
 
     /**
@@ -4801,6 +5781,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         $result = parent::get($table, $limit, $offset);
 
+        // Capture main query
+        $this->_executed_queries[] = parent::last_query();
+
         $error = $this->error();
         if ($error['code'] !== 0) $this->handle_database_error($error);
 
@@ -4881,7 +5864,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $parts = explode('.', $key);
                 $key_for_validation = end($parts);
             }
-            
+
             // Validasi column name untuk mencegah injection
             if (!$this->is_valid_column_name($key_for_validation)) {
                 continue; // Skip jika tidak valid
@@ -4891,18 +5874,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $auto_rel_key = '_auto_rel_' . $key_for_validation;
 
             if (!in_array($key_for_validation, $selected_fields) && !in_array($auto_rel_key, $selected_fields)) {
-                // If key already has table prefix (e.g., 'member.member_type'), use it as-is
-                if (strpos($key, '.') !== false) {
-                    // Key already has table prefix, use it directly
-                    $alias_name = $this->protect_identifiers($auto_rel_key, true);
-                    $this->select("{$key} AS {$alias_name}", false);
-                } else {
-                    // Add table alias/name to key
-                    $table_name = $this->protect_identifiers($table_alias, true);
-                    $column_name = $this->protect_identifiers($key, true);
-                    $alias_name = $this->protect_identifiers($auto_rel_key, true);
-                    $this->select("{$table_name}.{$column_name} AS {$alias_name}", false);
-                }
+                $table_name = $this->protect_identifiers($table_alias, true);
+                $column_name = $this->protect_identifiers($key_for_validation, true);
+                $alias_name = $this->protect_identifiers($auto_rel_key, true);
+                $this->select("{$table_name}.{$column_name} AS {$alias_name}", false);
             }
         }
     }
@@ -4949,11 +5924,18 @@ class CustomQueryBuilder extends CI_DB_query_builder
             foreach ($data as $item) {
                 $composite_key = [];
                 foreach ($local_keys as $key) {
-                    $aliased_key = "_auto_rel_{$key}";
+                    // Extract actual column name from key (remove table prefix if exists)
+                    $actual_column = $key;
+                    if (strpos($key, '.') !== false) {
+                        $parts = explode('.', $key);
+                        $actual_column = end($parts);
+                    }
+
+                    $aliased_key = "_auto_rel_{$actual_column}";
                     if (isset($item[$aliased_key])) {
                         $composite_key[] = $item[$aliased_key];
-                    } elseif (isset($item[$key])) {
-                        $composite_key[] = $item[$key];
+                    } elseif (isset($item[$actual_column])) {
+                        $composite_key[] = $item[$actual_column];
                     } else {
                         $composite_key[] = null;
                     }
@@ -4972,14 +5954,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
             });
         } else {
             $local_key = $local_keys[0];
-            
+
             // Extract actual column name from local_key (remove table prefix if exists)
             $actual_column = $local_key;
             if (strpos($local_key, '.') !== false) {
                 $parts = explode('.', $local_key);
                 $actual_column = end($parts);
             }
-            
+
             $aliased_key = "_auto_rel_{$actual_column}";
 
             $local_values = [];
@@ -5009,6 +5991,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         $relation_query = clone $this;
+        $relation_query->_executed_queries = [];
         $relation_query->reset_query();
         $relation_query->from($config['relation']);
 
@@ -5041,12 +6024,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $relation_table = $this->extract_table_name($config['relation']);
                 $foreign_key = $relation_table . '.' . $foreign_key;
             }
-            
+
             $relation_query->where_in($foreign_key, $local_values);
         }
 
         if (is_callable($config['callback'])) {
             $base_db = clone $this;
+            $base_db->_executed_queries = [];
             $base_db->reset_query();
             $base_db->from($config['relation']);
 
@@ -5078,7 +6062,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     $relation_table = $this->extract_table_name($config['relation']);
                     $foreign_key = $relation_table . '.' . $foreign_key;
                 }
-                
+
                 $base_db->where_in($foreign_key, $local_values);
             }
 
@@ -5242,6 +6226,17 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $relation_builder->pending_where_aggregates = [];
             }
 
+            // Process pending JOIN aggregates from NestedQueryBuilder
+            if (!empty($relation_builder->pending_join_aggregates)) {
+                // Transfer pending_join_aggregates to base_db for processing
+                $relation_builder->db->pending_join_aggregates = $relation_builder->pending_join_aggregates;
+                // process_pending_join_aggregates() uses qb_from which is already set to the relation table
+                $relation_builder->db->process_pending_join_aggregates();
+                // Clear the pending operations
+                $relation_builder->pending_join_aggregates = [];
+            }
+
+            $auto_added_fk_columns = [];
             foreach ($foreign_keys as $fk) {
                 // Extract actual column name without table prefix for auto_include
                 $fk_column = $fk;
@@ -5249,13 +6244,22 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     $parts = explode('.', $fk);
                     $fk_column = end($parts);
                 }
-                $this->auto_include_foreign_key($relation_builder->db, $fk_column);
+                if ($this->auto_include_foreign_key($relation_builder->db, $fk_column)) {
+                    $auto_added_fk_columns[] = $fk_column;
+                }
             }
 
             $this->auto_include_nested_keys($relation_builder);
 
             if (!empty($relation_builder->with_relations)) {
                 $relation_result = $relation_builder->db->get();
+                // Capture relation queries (including any nested eager loading sub-queries)
+                if (!empty($relation_builder->db->_executed_queries)) {
+                    $this->_executed_queries = array_merge($this->_executed_queries, $relation_builder->db->_executed_queries);
+                } else {
+                    $sql = $relation_builder->db->last_query();
+                    if ($sql) $this->_executed_queries[] = $sql;
+                }
                 $relation_data = [];
                 if ($relation_result->num_rows() > 0) {
                     $relation_data = $relation_result->result_array();
@@ -5263,9 +6267,17 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 }
             } else {
                 $relation_result = $relation_builder->db->get();
+                // Capture relation queries (including any nested eager loading sub-queries)
+                if (!empty($relation_builder->db->_executed_queries)) {
+                    $this->_executed_queries = array_merge($this->_executed_queries, $relation_builder->db->_executed_queries);
+                } else {
+                    $sql = $relation_builder->db->last_query();
+                    if ($sql) $this->_executed_queries[] = $sql;
+                }
                 $relation_data = $relation_result->result_array();
             }
         } else {
+            $auto_added_fk_columns = [];
             foreach ($foreign_keys as $fk) {
                 // Extract actual column name for auto_include
                 $fk_column = $fk;
@@ -5273,10 +6285,15 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     $parts = explode('.', $fk);
                     $fk_column = end($parts);
                 }
-                $this->auto_include_foreign_key($relation_query, $fk_column);
+                if ($this->auto_include_foreign_key($relation_query, $fk_column)) {
+                    $auto_added_fk_columns[] = $fk_column;
+                }
             }
 
             $relation_result = $relation_query->get();
+            // Capture relation query (simple path — no callback)
+            $sql = $relation_query->last_query();
+            if ($sql) $this->_executed_queries[] = $sql;
             $relation_data = $relation_result->result_array();
         }
 
@@ -5312,6 +6329,28 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
         }
 
+        // Strip FK columns that were auto-added solely for grouping/matching.
+        // The user did not select them; they should not appear in the final relation items.
+        if (!empty($auto_added_fk_columns)) {
+            foreach ($grouped_relations as &$rel_group) {
+                if ($config['multiple']) {
+                    foreach ($rel_group as &$rel_item) {
+                        if (is_array($rel_item)) {
+                            foreach ($auto_added_fk_columns as $fk_col) unset($rel_item[$fk_col]);
+                        }
+                    }
+                    unset($rel_item);
+                } else {
+                    if (is_object($rel_group)) {
+                        foreach ($auto_added_fk_columns as $fk_col) unset($rel_group->$fk_col);
+                    } elseif (is_array($rel_group)) {
+                        foreach ($auto_added_fk_columns as $fk_col) unset($rel_group[$fk_col]);
+                    }
+                }
+            }
+            unset($rel_group);
+        }
+
         foreach ($data as &$item) {
             if (count($local_keys) > 1) {
                 $composite_key = [];
@@ -5322,7 +6361,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $parts = explode('.', $lk);
                         $lk_column = end($parts);
                     }
-                    
+
                     $aliased_key = "_auto_rel_{$lk_column}";
                     if (isset($item[$aliased_key])) {
                         $composite_key[] = $item[$aliased_key];
@@ -5341,7 +6380,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     $parts = explode('.', $local_key);
                     $lk_column = end($parts);
                 }
-                
+
                 $aliased_key = "_auto_rel_{$lk_column}";
                 if (isset($item[$aliased_key])) {
                     $local_value = $item[$aliased_key];
@@ -5383,7 +6422,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * Automatically include foreign key in relation query SELECT
      * 
      * @param object $query_instance Database query instance
-     * @param string $foreign_key Foreign key column name
+     * @param string $foreign_key Foreign key column name (may include table prefix)
      * @return void
      */
     protected function auto_include_foreign_key($query_instance, $foreign_key)
@@ -5391,6 +6430,23 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $current_select = $query_instance->qb_select;
 
         if (empty($current_select) || (count($current_select) === 1 && $current_select[0] === '*')) return;
+
+        // Extract actual column name from foreign_key (remove table prefix if exists)
+        $actual_column = $foreign_key;
+        if (strpos($foreign_key, '.') !== false) {
+            $parts = explode('.', $foreign_key);
+            $actual_column = end($parts);
+        }
+
+        // If any select item is a table-wildcard (e.g. `table`.*), the FK is already
+        // covered by that wildcard.  Adding a bare unqualified column on top of a JOIN
+        // that also has the same column name in its derived table causes
+        // "Column … in SELECT is ambiguous".  The wildcard already returns the FK,
+        // so we can safely skip adding it again.
+        foreach ($current_select as $select_item) {
+            $clean = trim(str_replace('`', '', $select_item));
+            if (preg_match('/^(\w+)\.\*$/', $clean)) return false; // FK already covered by table.* wildcard
+        }
 
         $selected_fields = [];
         foreach ($current_select as $select_item) {
@@ -5400,10 +6456,25 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
         }
 
-        if (!in_array($foreign_key, $selected_fields)) {
-            $column_name = $query_instance->protect_identifiers($foreign_key, true);
-            $query_instance->select($column_name, false);
+        if (!in_array($actual_column, $selected_fields)) {
+            // Always qualify the FK with the main table name so it is never ambiguous
+            // when a join_* derived sub-table also selects the same column for its GROUP BY.
+            $main_table = '';
+            if (!empty($query_instance->qb_from)) {
+                $raw = trim(str_replace('`', '', $query_instance->qb_from[0]));
+                // qb_from entry may be "table_name" or "table_name alias"
+                $parts = preg_split('/\s+/', $raw);
+                $main_table = end($parts); // last token = alias if present, otherwise table name
+            }
+            if ($main_table !== '') {
+                $query_instance->select('`' . $main_table . '`.`' . $actual_column . '`', false);
+            } else {
+                $column_name = $query_instance->protect_identifiers($actual_column, true);
+                $query_instance->select($column_name, false);
+            }
+            return true; // column was auto-added
         }
+        return false; // column was already in user's SELECT
     }
 
     /**
@@ -5433,18 +6504,54 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         if (empty($current_select) || (count($current_select) === 1 && $current_select[0] === '*')) return;
 
+        // Extract selected fields — capture AS alias when present (mirrors auto_include_relation_keys)
         $selected_fields = [];
         foreach ($current_select as $select_item) {
-            $field_pattern = '/(?:`?(\w+)`?\.)?`?(\w+)`?(?:\s+AS\s+`?\w+`?)?/i';
+            $field_pattern = '/(?:`?(\w+)`?\.)?`?(\w+)`?(?:\s+AS\s+`?(\w+)`?)?/i';
             if (preg_match($field_pattern, $select_item, $matches)) {
-                $selected_fields[] = $matches[2];
+                $field_name = isset($matches[3]) && $matches[3] !== '' ? $matches[3] : $matches[2];
+                $selected_fields[] = $field_name;
+            }
+        }
+
+        // Resolve relation table alias for column qualification
+        $table_alias = '';
+        if (!empty($relation_builder->db->qb_from)) {
+            $from_clause = $relation_builder->db->qb_from[0];
+            if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $from_clause, $tbl_matches)) {
+                $table_alias = isset($tbl_matches[2]) && $tbl_matches[2] !== '' ? $tbl_matches[2] : $tbl_matches[1];
+            } else {
+                $table_alias = $from_clause;
             }
         }
 
         foreach ($required_keys as $key) {
-            if (!in_array($key, $selected_fields)) {
-                $column_name = $relation_builder->db->protect_identifiers($key, true);
-                $relation_builder->db->select($column_name, false);
+            // Extract actual column name from key (remove table prefix if exists)
+            $actual_column = $key;
+            if (strpos($key, '.') !== false) {
+                $parts = explode('.', $key);
+                $actual_column = end($parts);
+            }
+
+            // Bug fix #3: validate column name to prevent injection (was missing entirely)
+            if (!$this->is_valid_column_name($actual_column)) {
+                continue;
+            }
+
+            // Bug fix #2: also check for the _auto_rel_ alias so we don't add duplicates
+            $auto_rel_key = '_auto_rel_' . $actual_column;
+
+            if (!in_array($actual_column, $selected_fields) && !in_array($auto_rel_key, $selected_fields)) {
+                // Bug fix #1 & #4: qualify with table alias and add _auto_rel_ alias so the
+                // column is tracked and cleaned up by remove_auto_relation_keys() later
+                $tbl_name    = $relation_builder->db->protect_identifiers($table_alias, true);
+                $column_name = $relation_builder->db->protect_identifiers($actual_column, true);
+                $alias_name  = $relation_builder->db->protect_identifiers($auto_rel_key, true);
+                if ($table_alias !== '') {
+                    $relation_builder->db->select("{$tbl_name}.{$column_name} AS {$alias_name}", false);
+                } else {
+                    $relation_builder->db->select("{$column_name} AS {$alias_name}", false);
+                }
             }
         }
     }
@@ -5583,6 +6690,32 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Get last executed query or all executed queries (including eager loading).
+     *
+     * Returns a plain string when no eager loading queries were tracked,
+     * or an indexed array when eager loading was used:
+     *   [0] => 'SELECT ... FROM main_table ...',    // main query
+     *   [1] => 'SELECT ... FROM relation_table ...', // first relation
+     *   ...
+     *
+     * Example:
+     *   // Plain query — returns string
+     *   $this->db->where('id', 1)->get('users');
+     *   $sql = $this->db->last_query(); // string
+     *
+     *   // With eager loading — returns array
+     *   $this->db->with_many('posts', 'user_id', 'id')->get('users');
+     *   $queries = $this->db->last_query(); // array
+     *
+     * @return string|array Last query string, or array of all executed queries
+     */
+    public function all_last_query()
+    {
+        if (!empty($this->_executed_queries)) return $this->_executed_queries;
+        return [parent::last_query()];
+    }
+
+    /**
      * Reset query builder state including relations and pending conditions
      * 
      * @return CI_DB_query_builder Query builder instance
@@ -5592,11 +6725,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->with_relations = [];
         $this->pending_where_has = [];
         $this->pending_aggregates = [];
+        $this->pending_join_aggregates = [];
         $this->pending_where_exists = [];
         $this->pending_where_aggregates = [];
         $this->pending_where_queue = [];
+        $this->pending_groups = [];
         $this->_in_group_context = 0;
         $this->_calc_rows_enabled = false;
+        $this->_temp_table_name = null;
         return parent::reset_query();
     }
 
