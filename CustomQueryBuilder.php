@@ -2059,7 +2059,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_in($key = NULL, $values = NULL, $escape = NULL)
     {
-        return parent::where_in($key, $values, $escape);
+        if (!is_array($values) || count($values) === 0) {
+            return parent::where_in($key, $values, $escape);
+        }
+        return $this->_safe_in_clause($key, $values, FALSE, 'AND ', $escape);
     }
 
     /**
@@ -2075,7 +2078,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_where_in($key = NULL, $values = NULL, $escape = NULL)
     {
-        return parent::or_where_in($key, $values, $escape);
+        if (!is_array($values) || count($values) === 0) {
+            return parent::or_where_in($key, $values, $escape);
+        }
+        return $this->_safe_in_clause($key, $values, FALSE, 'OR ', $escape);
     }
 
     /**
@@ -2091,7 +2097,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_not_in($key = NULL, $values = NULL, $escape = NULL)
     {
-        return parent::where_not_in($key, $values, $escape);
+        if (!is_array($values) || count($values) === 0) {
+            return parent::where_not_in($key, $values, $escape);
+        }
+        return $this->_safe_in_clause($key, $values, TRUE, 'AND ', $escape);
     }
 
 	// --------------------------------------------------------------------
@@ -2109,7 +2118,69 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_where_not_in($key = NULL, $values = NULL, $escape = NULL)
     {
-        return parent::or_where_not_in($key, $values, $escape);
+        if (!is_array($values) || count($values) === 0) {
+            return parent::or_where_not_in($key, $values, $escape);
+        }
+        return $this->_safe_in_clause($key, $values, TRUE, 'OR ', $escape);
+    }
+
+    /**
+     * Builds a WHERE [NOT] IN clause directly into qb_where, bypassing
+     * CI's internal preg_match validation which fails with a
+     * "regular expression is too large" PCRE error when the value list
+     * is very large.
+     *
+     * - Numeric arrays: every value is cast to intval (SQL-safe, no quotes).
+     * - String arrays:  every value is run through $this->escape() individually
+     *   (proper quoting + special-char escaping without a giant regex).
+     * - When $escape === FALSE the values are inserted as-is (caller's
+     *   responsibility — same contract as the native CI methods).
+     *
+     * @param  string      $key     Column name / table.column
+     * @param  array       $values  The values to match
+     * @param  bool        $not     TRUE for NOT IN
+     * @param  string      $type    'AND ' or 'OR '
+     * @param  bool|null   $escape  NULL = auto, FALSE = no escaping
+     * @return CustomQueryBuilder
+     */
+    protected function _safe_in_clause($key, array $values, $not = FALSE, $type = 'AND ', $escape = NULL)
+    {
+        // Mirror CI's _wh() prefix logic exactly:
+        // - first condition ever → no prefix
+        // - first condition right after group_start() → no prefix (clears qb_where_group_started flag)
+        // - all other conditions → 'AND ' or 'OR '
+        $prefix = (count($this->qb_where) === 0 && count($this->qb_cache_where) === 0)
+            ? $this->_group_get_type('')
+            : $this->_group_get_type($type);
+
+        if ($escape === FALSE) {
+            $in_list = implode(',', array_values($values));
+        } else {
+            $all_numeric = true;
+            foreach ($values as $v) {
+                if (!is_numeric($v)) {
+                    $all_numeric = false;
+                    break;
+                }
+            }
+            if ($all_numeric) {
+                $in_list = implode(',', array_map('intval', $values));
+            } else {
+                $in_list = implode(',', array_map([$this, 'escape'], $values));
+            }
+        }
+
+        $not_str   = $not ? ' NOT' : '';
+        $condition = $prefix . $key . $not_str . ' IN (' . $in_list . ')';
+
+        $this->qb_where[] = ['condition' => $condition, 'escape' => FALSE];
+
+        if ($this->qb_caching === TRUE) {
+            $this->qb_cache_where[]  = end($this->qb_where);
+            $this->qb_cache_exists[] = 'where';
+        }
+
+        return $this;
     }
 
     // --------------------------------------------------------------------
