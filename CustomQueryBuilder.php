@@ -3389,8 +3389,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $alias = $relation;
         }
 
-        // VALIDASI KEAMANAN: Validasi relation name
-        if (!$this->is_valid_table_name($relation_name)) {
+        // VALIDASI KEAMANAN: Validasi relation name (extract base table name for validation, alias is allowed)
+        $relation_name_for_validation = $this->extract_table_name($relation_name);
+        if (!$this->is_valid_table_name($relation_name_for_validation)) {
             throw new InvalidArgumentException("Invalid relation name: {$relation_name}. Only alphanumeric characters and underscores are allowed.");
         }
 
@@ -5677,7 +5678,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         for ($i = 0; $i < count($foreign_keys); $i++) {
             // Use relation identifier (alias if present, otherwise table name) for foreign key
-            $foreign_key_with_table = $relation_identifier . '.' . $foreign_keys[$i];
+            // If foreign key already has a table qualifier (contains a dot), use it as-is
+            if (strpos($foreign_keys[$i], '.') !== false) {
+                $foreign_key_with_table = $foreign_keys[$i];
+            } else {
+                $foreign_key_with_table = $relation_identifier . '.' . $foreign_keys[$i];
+            }
 
             // Check if local key already has table reference (contains a dot)
             if (strpos($local_keys[$i], '.') !== false) {
