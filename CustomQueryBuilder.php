@@ -6402,7 +6402,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 if (!isset($grouped_relations[$key])) $grouped_relations[$key] = [];
                 $grouped_relations[$key][] = $relation_item;
             } else {
-                $grouped_relations[$key] = is_array($relation_item) ? (object)$relation_item : $relation_item;
+                // Only store the first occurrence so that the ORDER BY from the
+                // callback is respected (e.g. DESC keeps the highest value row).
+                if (!isset($grouped_relations[$key])) {
+                    $grouped_relations[$key] = is_array($relation_item) ? (object)$relation_item : $relation_item;
+                }
             }
         }
 
