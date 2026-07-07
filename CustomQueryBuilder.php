@@ -301,6 +301,25 @@ trait QueryValidationTrait
     }
 
     /**
+     * OR/AND/IS/NOT are only allowed as tokens so CASE WHEN ... THEN ... END
+     * expressions can use compound conditions (e.g. "WHEN a=1 AND b=2"). With
+     * no CASE anywhere in the expression, there is no legitimate reason for a
+     * boolean keyword to appear — e.g. "SUM(price) OR 1=1" is a tautology
+     * tacked onto what should be a pure value expression. This doesn't scope
+     * OR/AND to strictly inside the CASE...END span (that needs a real
+     * parser), but it closes the simplest and most obvious bypass: a bare
+     * boolean keyword with no CASE construct anywhere in the expression.
+     *
+     * @param string $expression
+     * @return bool True if a boolean keyword appears with no CASE present
+     */
+    protected function has_boolean_keyword_outside_case($expression)
+    {
+        return preg_match('/\b(OR|AND|IS|NOT)\b/i', $expression) === 1
+            && preg_match('/\bCASE\b/i', $expression) !== 1;
+    }
+
+    /**
      * Validate custom SQL expression for aggregation functions
      *
      * @param string $expression Custom SQL expression to validate
@@ -310,6 +329,8 @@ trait QueryValidationTrait
     {
         $extra_patterns = ['/\bSELECT\b/i', '/\bFROM\b/i', '/\bJOIN\b/i'];
         if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/', $extra_patterns))
+            return false;
+        if ($this->has_boolean_keyword_outside_case($expression))
             return false;
         if (!$this->has_only_allowed_function_calls($expression))
             return false;
@@ -343,7 +364,16 @@ trait QueryValidationTrait
         if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`%<>=\'"]+$/'))
             return false;
 
-        // Block dangerous SQL keywords (but allow CASE, WHEN, THEN, ELSE, END)
+        if ($this->has_boolean_keyword_outside_case($expression))
+            return false;
+
+        // Block dangerous SQL keywords (but allow CASE, WHEN, THEN, ELSE, END).
+        // SELECT/FROM/JOIN/WHERE/HAVING/OUTFILE/DUMPFILE were previously only
+        // blocked incidentally — as a side effect of is_valid_column_name()
+        // rejecting them as bare tokens — rather than explicitly, unlike
+        // is_valid_custom_expression()'s dedicated extra_patterns. Listing them
+        // here directly means this stays blocked even if the token-validation
+        // path is ever refactored, instead of relying on that overlap.
         $dangerous_keywords = [
             'INSERT',
             'UPDATE',
@@ -356,7 +386,14 @@ trait QueryValidationTrait
             'ALTER',
             'TRUNCATE',
             'INTO',
-            'VALUES'
+            'VALUES',
+            'SELECT',
+            'FROM',
+            'JOIN',
+            'WHERE',
+            'HAVING',
+            'OUTFILE',
+            'DUMPFILE'
         ];
         foreach ($dangerous_keywords as $keyword) {
             if (preg_match('/\b' . $keyword . '\b/i', $expression))
@@ -563,6 +600,19 @@ class CustomQueryBuilderResult
     private $_original_result;
 
     /**
+     * @var array|null Memoized result() output. $_data is set once in the
+     * constructor and never mutated afterward, so it's safe to compute the
+     * object-conversion once and reuse it on every subsequent call instead of
+     * re-walking the whole result set each time.
+     */
+    private $_cached_object_result = null;
+
+    /**
+     * @var array|null Memoized result_array() output. See $_cached_object_result.
+     */
+    private $_cached_array_result = null;
+
+    /**
      * Constructor
      *
      * @param array $data Result data
@@ -659,32 +709,50 @@ class CustomQueryBuilderResult
 
     /**
      * Get result as array
-     * 
+     *
+     * Memoized — repeated calls reuse the same converted array instead of
+     * re-walking $_data each time.
+     *
      * @return array Result data as array
      */
     public function result_array()
     {
-        return $this->convert_relations_to_array($this->_data);
+        if ($this->_cached_array_result === null) {
+            $this->_cached_array_result = $this->convert_relations_to_array($this->_data);
+        }
+        return $this->_cached_array_result;
     }
 
     /**
      * Get result as objects
-     * 
+     *
+     * Memoized — repeated calls reuse the same converted array instead of
+     * re-walking $_data each time.
+     *
      * @return array Result data as objects
      */
     public function result()
     {
-        return $this->convert_relations_to_object($this->_data);
+        if ($this->_cached_object_result === null) {
+            $this->_cached_object_result = $this->convert_relations_to_object($this->_data);
+        }
+        return $this->_cached_object_result;
     }
 
     /**
      * Get single row as array
-     * 
+     *
+     * Reuses result_array()'s cache if it's already been computed; otherwise
+     * converts only this one row, so calling row_array() alone stays cheap.
+     *
      * @param int $index Row index (default: 0)
      * @return array|null Single row data as array or null if not found
      */
     public function row_array($index = 0)
     {
+        if ($this->_cached_array_result !== null) {
+            return isset($this->_cached_array_result[$index]) ? $this->_cached_array_result[$index] : null;
+        }
         if (empty($this->_data) || !isset($this->_data[$index]))
             return null;
         $converted = $this->convert_relations_to_array([$this->_data[$index]]);
@@ -693,12 +761,18 @@ class CustomQueryBuilderResult
 
     /**
      * Get single row as object
-     * 
+     *
+     * Reuses result()'s cache if it's already been computed; otherwise
+     * converts only this one row, so calling row() alone stays cheap.
+     *
      * @param int $index Row index (default: 0)
      * @return object|null Single row data as object or null if not found
      */
     public function row($index = 0)
     {
+        if ($this->_cached_object_result !== null) {
+            return isset($this->_cached_object_result[$index]) ? $this->_cached_object_result[$index] : null;
+        }
         if (!isset($this->_data[$index]))
             return null;
         $converted = $this->convert_relations_to_object([$this->_data[$index]]);
@@ -793,8 +867,18 @@ class CustomQueryBuilderResult
      */
     private function deep_convert($data, $to_object = false, $depth = 0, $maxDepth = 20)
     {
-        if ($depth > $maxDepth)
+        if ($depth > $maxDepth) {
+            // Truncating here (instead of recursing further) protects against
+            // unbounded/circular structures, but doing it silently means real
+            // data loss at this depth would go completely unnoticed — surface
+            // it as a warning so it shows up in logs instead of just vanishing.
+            trigger_error(
+                "CustomQueryBuilderResult: data truncated at depth > {$maxDepth} while converting result data. " .
+                "This usually means an unexpectedly deep/circular nested structure — some fields were dropped.",
+                E_USER_WARNING
+            );
             return null; // Prevent infinite recursion
+        }
 
         if (is_object($data))
             $data = (array) $data;
