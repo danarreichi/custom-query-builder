@@ -837,69 +837,20 @@ class CustomQueryBuilderResult
 }
 
 /**
- * Nested Query Builder Class
- * 
- * Provides nested query capabilities with relation support
- * 
+ * Relation Aggregate Trait
+ *
+ * Shared implementation for eager-loading relation/aggregate registration
+ * methods (with, with_count/sum/avg/max/min, with_calculation, join_*,
+ * where_aggregate/or_where_aggregate). Used by both CustomQueryBuilder
+ * (top-level queries) and NestedQueryBuilder (relation callbacks) so both
+ * contexts share identical validation and behavior.
+ *
  * @package CustomQueryBuilder
  * @author  Danar Ardiwinanto
  * @version 1.0.0
  */
-class NestedQueryBuilder
+trait RelationAggregateTrait
 {
-    use QueryValidationTrait;
-    /**
-     * @var array Array of with relations
-     */
-    public $with_relations = [];
-
-    /**
-     * @var array Array of pending aggregate functions
-     */
-    public $pending_aggregates = [];
-
-    /**
-     * @var array Array of pending WHERE EXISTS relations
-     */
-    public $pending_where_exists = [];
-
-    /**
-     * @var array Array of pending WHERE aggregate conditions
-     */
-    public $pending_where_aggregates = [];
-
-    /**
-     * @var array Array of pending derived-table JOIN aggregates
-     */
-    public $pending_join_aggregates = [];
-
-    /**
-     * @var object Database instance
-     */
-    public $db;
-
-    /**
-     * Constructor
-     * 
-     * @param object $db_instance Database instance
-     */
-    public function __construct($db_instance)
-    {
-        $this->db = $db_instance;
-    }
-
-    /**
-     * Magic method to call database methods
-     * 
-     * @param string $method Method name
-     * @param array $args Method arguments
-     * @return mixed Method result
-     */
-    public function __call($method, $args)
-    {
-        return call_user_func_array([$this->db, $method], $args);
-    }
-
     /**
      * Add eager loading relation
      * 
@@ -907,7 +858,7 @@ class NestedQueryBuilder
      * @param string|array $foreignKey Foreign key(s)
      * @param string|array $localKey Local key(s)
      * @param bool $multiple Whether relation returns multiple records
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for relation query
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
      * @return $this
      * @throws InvalidArgumentException
      */
@@ -961,7 +912,7 @@ class NestedQueryBuilder
      * @param string|array $localKey Local key(s)
      * @param string|null $column Column to aggregate (null for count)
      * @param bool $is_custom_expression Whether $column is a custom SQL expression
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for relation query
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
      * @return $this
      */
     protected function add_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $is_custom_expression = false, $callback = null)
@@ -999,10 +950,33 @@ class NestedQueryBuilder
     /**
      * Add eager loading relation with count aggregation
      * 
+     * Now works as subquery in main SELECT clause for better sorting capability.
+     * 
+     * Example:
+     * // Get users with their order count (can be sorted)
+     * $users = $this->db->with_count('orders', 'user_id', 'id')
+     *                   ->order_by('orders_count', 'DESC')
+     *                   ->get('users');
+     * // Result: $user->orders_count
+     * 
+     * // With alias
+     * $this->db->with_count(['orders' => 'total_orders'], 'user_id', 'id');
+     * // Result: $user->total_orders
+     * 
+     * // Can be used with with_many() and with_one()
+     * $users = $this->db->with_count('orders', 'user_id', 'id')
+     *                   ->with_many('posts', 'user_id', 'id')
+     *                   ->get('users');
+     * 
+     * // Can be used in callbacks (for relation subqueries)
+     * $posts = $this->db->with_many('comments', 'post_id', 'id', function($query) {
+     *     $query->with_count('likes', 'comment_id', 'id');
+     * })->get('posts');
+     * 
      * @param string|array $relation Relation name or array with alias
      * @param string|array $foreignKey Foreign key(s)
      * @param string|array $localKey Local key(s)
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for relation query
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
      * @return $this
      */
     public function with_count($relation, $foreignKey, $localKey, $callback = null)
@@ -1055,7 +1029,7 @@ class NestedQueryBuilder
      * @param string|array $localKey Local key(s)
      * @param string $column Column to sum or custom expression
      * @param bool $is_custom_expression Whether $column is a custom SQL expression (default: false)
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for relation query
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
      * @return $this
      */
     public function with_sum($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
@@ -1097,7 +1071,7 @@ class NestedQueryBuilder
      * @param string|array $localKey Local key(s)
      * @param string $column Column to calculate average or custom expression
      * @param bool $is_custom_expression Whether $column is a custom SQL expression (default: false)
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for relation query
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
      * @return $this
      */
     public function with_avg($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
@@ -1139,7 +1113,7 @@ class NestedQueryBuilder
      * @param string|array $localKey Local key(s)
      * @param string $column Column to find maximum value or custom expression
      * @param bool $is_custom_expression Whether $column is a custom SQL expression (default: false)
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for relation query
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
      * @return $this
      */
     public function with_max($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
@@ -1155,24 +1129,25 @@ class NestedQueryBuilder
      * $users = $this->db->with_min('orders', 'user_id', 'id', 'total_amount')->get('users');
      * // Result: $user->orders_min
      * 
-     * // Get posts with earliest comment date
-     * $this->db->with_min(['comments' => 'earliest_comment'], 'post_id', 'id', 'created_at');
-     * // Result: $post->earliest_comment
+     * // Get categories with earliest post date
+     * $this->db->with_min(['posts' => 'first_post'], 'category_id', 'id', 'created_at');
+     * // Result: $category->first_post
      * 
      * // With custom expression (mathematical operations)
-     * $products = $this->db->with_min('sales', 'product_id', 'id', '(base_price - discount)', true);
-     * // Result: $product->sales_min (minimum of calculated values)
+     * $transactions = $this->db->with_min('payments', 'transaction_id', 'id', '(amount - discount)', true);
+     * // Result: $transaction->payments_min (minimum of calculated values)
      * 
      * // With callback for WHERE conditions
      * $users = $this->db->with_min('orders', 'user_id', 'id', 'total_amount', false, function($query) {
      *     $query->where('status', 'completed')
-     *           ->where('payment_status', 'paid');
+     *           ->where('discount', 0);  // Orders without discount
      * })->get('users');
      * 
      * // With custom expression and callback
-     * $products = $this->db->with_min('sales', 'product_id', 'id', '(base_price - discount)', true,
+     * $transactions = $this->db->with_min('payments', 'transaction_id', 'id', '(amount - discount)', true,
      *     function($query) {
-     *         $query->where('sale_date >=', '2023-01-01');
+     *         $query->where('payment_method', 'cash')
+     *               ->where('is_verified', 1);
      *     }
      * );
      * 
@@ -1181,12 +1156,302 @@ class NestedQueryBuilder
      * @param string|array $localKey Local key(s)
      * @param string $column Column to find minimum value or custom expression
      * @param bool $is_custom_expression Whether $column is a custom SQL expression (default: false)
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for relation query
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
      * @return $this
      */
     public function with_min($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
     {
         return $this->add_aggregate('min', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
+    }
+
+    // =================================================================
+    // JOIN AGGREGATE METHODS (Derived Table JOIN — lighter DB load)
+    // Pre-aggregates the relation table in a single subquery then JOINs
+    // back to the main table — scans relation table once, regardless of
+    // how many rows the main query returns.
+    // Use these instead of with_sum/with_count/etc. when result sets
+    // are large and you only need the scalar aggregate value.
+    // =================================================================
+
+    /**
+     * Internal helper — register a derived-table JOIN aggregate
+     *
+     * @param string        $type       Aggregate type: count|sum|avg|min|max
+     * @param string        $relation   Related table name or raw SQL subquery (e.g. "(SELECT ...) alias")
+     * @param string|array  $foreignKey FK column(s) in the relation table
+     * @param string|array  $localKey   Local key column(s) in the main table
+     * @param string|null   $column     Column to aggregate (null for COUNT)
+     * @param string|null   $alias      Result alias (auto-generated if null)
+     * @param callable|null $callback   Optional callback to add WHERE inside derived table
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_join_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $alias = null, $callback = null)
+    {
+        // Detect raw SQL subquery passed as relation (e.g. "(SELECT ...) alias")
+        $is_subquery_relation = ltrim($relation)[0] === '(';
+
+        if (!$is_subquery_relation && !$this->is_valid_table_name($this->extract_table_name($relation))) {
+            throw new InvalidArgumentException("join_{$type}: invalid relation table name '" . htmlspecialchars($relation) . "'");
+        }
+
+        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
+        $local_keys   = is_array($localKey)   ? $localKey   : [$localKey];
+
+        if (count($foreign_keys) !== count($local_keys)) {
+            throw new InvalidArgumentException("join_{$type}: foreign key count must match local key count.");
+        }
+
+        $type_lower = strtolower($type);
+
+        // For subquery relations the "table name" used in agg functions and default
+        // aliases is the alias portion of the expression (e.g. "transaction_sub"),
+        // not the full subquery string.
+        $relation_ref = $is_subquery_relation
+            ? $this->extract_table_or_alias($relation)
+            : $relation;
+
+        switch ($type_lower) {
+            case 'count':
+                $agg_func      = 'COUNT(*)';
+                $default_alias = $relation_ref . '_count';
+                break;
+            case 'sum':
+                if (!$column) throw new InvalidArgumentException('join_sum: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_sum: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'SUM(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_sum';
+                break;
+            case 'avg':
+                if (!$column) throw new InvalidArgumentException('join_avg: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_avg: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'AVG(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_avg';
+                break;
+            case 'min':
+                if (!$column) throw new InvalidArgumentException('join_min: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_min: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'MIN(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_min';
+                break;
+            case 'max':
+                if (!$column) throw new InvalidArgumentException('join_max: $column is required.');
+                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_max: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func      = 'MAX(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                $default_alias = $relation_ref . '_max';
+                break;
+            case 'custom_calculation':
+                if (!$column) throw new InvalidArgumentException('join_calculation: $expression is required.');
+                if (!$this->is_valid_calculation_expression($column)) {
+                    throw new InvalidArgumentException("join_calculation: invalid expression '" . htmlspecialchars($column) . "'");
+                }
+                $agg_func      = $column; // raw expression, e.g. SUM(a) / SUM(b) * 100
+                $default_alias = $relation_ref . '_calculation';
+                break;
+            default:
+                throw new InvalidArgumentException("Invalid join aggregate type: {$type}");
+        }
+
+        $this->pending_join_aggregates[] = [
+            'type'        => $type_lower,
+            'relation'    => $relation,
+            'foreign_key' => $foreign_keys,
+            'local_key'   => $local_keys,
+            'aggregate'   => $agg_func,
+            'alias'       => $alias ?: $default_alias,
+            'callback'    => $callback,
+        ];
+
+        return $this;
+    }
+
+    /**
+     * Derived-table JOIN COUNT — lighter DB load than with_count()
+     *
+     * Scans the relation table once via GROUP BY instead of a correlated subquery per row.
+     *
+     * Example:
+     * $users = $this->db->join_count('orders', 'user_id', 'id')
+     *                   ->order_by('orders_count', 'DESC')
+     *                   ->get('users');
+     * // $user->orders_count
+     *
+     * // With alias + callback filter
+     * $users = $this->db->join_count(['orders' => 'completed_orders'], 'user_id', 'id', function($q) {
+     *     $q->where('status', 'completed');
+     * })->get('users');
+     * // $user->completed_orders
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_count($relation, $foreignKey, $localKey, $callback = null)
+    {
+        $alias         = is_array($relation) ? current($relation) : null;
+        $relation_name = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('count', $relation_name, $foreignKey, $localKey, null, $alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN SUM — lighter DB load than with_sum()
+     *
+     * Scans the relation table once via GROUP BY instead of a correlated subquery per row.
+     *
+     * Example:
+     * $users = $this->db->join_sum('orders', 'user_id', 'id', 'total_amount')
+     *                   ->order_by('orders_sum', 'DESC')
+     *                   ->get('users');
+     * // $user->orders_sum
+     *
+     * // With alias
+     * $users = $this->db->join_sum(['orders' => 'total_spent'], 'user_id', 'id', 'total_amount')
+     *                   ->get('users');
+     * // $user->total_spent
+     *
+     * // With callback
+     * $users = $this->db->join_sum('orders', 'user_id', 'id', 'total_amount', null, function($q) {
+     *     $q->where('status', 'completed');
+     * })->get('users');
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to SUM
+     * @param string|null   $alias      Override result alias (optional when using array syntax)
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_sum($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : null;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('sum', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN AVG — lighter DB load than with_avg()
+     *
+     * Example:
+     * $users = $this->db->join_avg('orders', 'user_id', 'id', 'total_amount')->get('users');
+     * // $user->orders_avg
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to AVG
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_avg($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : null;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('avg', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN MIN — lighter DB load than with_min()
+     *
+     * Example:
+     * $users = $this->db->join_min('orders', 'user_id', 'id', 'total_amount')->get('users');
+     * // $user->orders_min
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to MIN
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_min($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : null;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('min', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN MAX — lighter DB load than with_max()
+     *
+     * Example:
+     * $users = $this->db->join_max(['orders' => 'highest_order'], 'user_id', 'id', 'total_amount')
+     *                   ->get('users');
+     * // $user->highest_order
+     *
+     * @param string|array  $relation   Table name or ['table' => 'alias']
+     * @param string|array  $foreignKey FK column(s) in relation table
+     * @param string|array  $localKey   PK/local column(s) in main table
+     * @param string        $column     Column to MAX
+     * @param string|null   $alias      Override result alias
+     * @param callable|null $callback   Optional WHERE conditions inside derived table
+     * @return $this
+     */
+    public function join_max($relation, $foreignKey, $localKey, $column, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : null;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('max', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
+    }
+
+    /**
+     * Derived-table JOIN CALCULATION — lighter DB load than with_calculation()
+     *
+     * Pre-aggregates the relation table once in a derived-table JOIN using a custom
+     * mathematical expression. Scans the relation table once regardless of how many
+     * rows the main query returns.
+     *
+     * Use this instead of with_calculation() when result sets are large.
+     *
+     * Example:
+     * // Efficiency: (finished / total) * 100
+     * $orders = $this->db->join_calculation(
+     *     ['order_items' => 'efficiency_percentage'],
+     *     'order_id', 'id',
+     *     '(SUM(finished_qty) / SUM(total_qty)) * 100'
+     * )->get('orders');
+     * // $order->efficiency_percentage
+     *
+     * // Profit margin with optional callback filter
+     * $products = $this->db->join_calculation(
+     *     ['sales' => 'profit_margin'],
+     *     'product_id', 'id',
+     *     '((SUM(selling_price * quantity) - SUM(cost_price * quantity)) / SUM(selling_price * quantity)) * 100',
+     *     function($q) { $q->where('status', 'completed'); }
+     * )->get('products');
+     * // $product->profit_margin
+     *
+     * // Production duration using DATEDIFF
+     * $transactions = $this->db->join_calculation(
+     *     ['transaction_step' => 'production_duration_days'],
+     *     'idtransaction_detail', 'idtransaction_detail',
+     *     'DATEDIFF(MAX(date), MIN(date))'
+     * )->get('transaction_detail');
+     *
+     * Supported in expression:
+     * - Basic math: +, -, *, /, %
+     * - Aggregate functions: SUM, AVG, COUNT, MIN, MAX
+     * - Date functions: DATEDIFF, TIMESTAMPDIFF
+     * - Conditional: CASE WHEN ... THEN ... END
+     * - Mathematical functions: ROUND, FLOOR, CEIL, ABS
+     *
+     * @param string|array  $relation    Relation table name or ['table' => 'alias']
+     * @param string|array  $foreignKey  FK column(s) in the relation table
+     * @param string|array  $localKey    PK/local column(s) in the main table
+     * @param string        $expression  Mathematical expression with aggregate functions
+     * @param callable|null $callback    Optional WHERE conditions inside derived table
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function join_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)
+    {
+        $resolved_alias = is_array($relation) ? current($relation) : null;
+        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        return $this->add_join_aggregate('custom_calculation', $relation_name, $foreignKey, $localKey, $expression, $resolved_alias, $callback);
     }
 
     /**
@@ -1290,11 +1555,27 @@ class NestedQueryBuilder
      * calling where_aggregate() so the alias is registered.
      *
      * Example:
-     * // In callback context, filter by calculated field
-     * $this->db->with_many('orders', 'user_id', 'id', function($query) {
-     *     $query->with_calculation(['order_items' => 'total_revenue'], 'order_id', 'id', 'SUM(price * quantity)')
-     *           ->where_aggregate('total_revenue >', 1000);
-     * });
+     * // Filter by calculated field
+     * $this->db->with_calculation(['transaction_detail' => 'sales_price'], 'idtransaction', 'idtransaction', 'SUM(price)')
+     *          ->where_aggregate('sales_price >', 10000)
+     *          ->get('transaction');
+     *
+     * // Filter by sum aggregate
+     * $this->db->with_sum(['orders' => 'total_spent'], 'user_id', 'id', 'amount')
+     *          ->where_aggregate('total_spent >=', 5000)
+     *          ->get('users');
+     *
+     * // Multiple conditions
+     * $this->db->with_avg(['reviews' => 'avg_rating'], 'product_id', 'id', 'rating')
+     *          ->where_aggregate('avg_rating >', 4.5)
+     *          ->where_aggregate('avg_rating <', 5.0)
+     *          ->get('products');
+     *
+     * // With OR condition
+     * $this->db->with_sum(['orders' => 'total_amount'], 'user_id', 'id', 'amount')
+     *          ->where_aggregate('total_amount >', 10000)
+     *          ->or_where_aggregate('total_amount =', 0)
+     *          ->get('users');
      *
      * @param string $condition Condition string in format "alias operator" (e.g., "sales_price >", "total_count >=")
      * @param mixed $value Value to compare against
@@ -1310,11 +1591,10 @@ class NestedQueryBuilder
      * Add OR WHERE condition based on calculated field alias (simplified syntax)
      *
      * Example:
-     * $this->db->with_many('orders', 'user_id', 'id', function($query) {
-     *     $query->with_sum(['items' => 'total_amount'], 'order_id', 'id', 'amount')
-     *           ->where_aggregate('total_amount >', 5000)
-     *           ->or_where_aggregate('total_amount =', 0);
-     * });
+     * $this->db->with_sum(['orders' => 'total_amount'], 'user_id', 'id', 'amount')
+     *          ->where_aggregate('total_amount >', 5000)
+     *          ->or_where_aggregate('total_amount =', 0)
+     *          ->get('users');
      *
      * @param string $condition Condition string in format "alias operator"
      * @param mixed $value Value to compare against
@@ -1338,7 +1618,6 @@ class NestedQueryBuilder
     protected function add_where_calculated($condition_type, $condition, $value)
     {
         // Parse condition string to extract alias and operator
-        // UPDATE REGEX to support BETWEEN
         $pattern = '/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|>|<|>=|<=|!=|<>|BETWEEN|NOT\\s+BETWEEN)\s*$/i';
         if (!preg_match($pattern, trim($condition), $matches)) {
             throw new InvalidArgumentException("Invalid condition format: '{$condition}'. Expected format: 'alias operator' (e.g., 'sales_price >', 'total_count >=', 'sales_price BETWEEN')");
@@ -1415,7 +1694,7 @@ class NestedQueryBuilder
         }
 
         // Validate operator
-        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>', 'BETWEEN', 'NOT BETWEEN'];
         if (!in_array($operator, $allowed_operators)) {
             throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
         }
@@ -1451,32 +1730,22 @@ class NestedQueryBuilder
         $processed_foreign_keys = [];
         $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
         foreach ($foreign_keys_array as $fk) {
-            if (strpos($fk, '.') !== false) {
-                $parts = explode('.', $fk);
-                $key_name = end($parts);
-            } else {
-                $key_name = $fk;
-            }
-            if (!$this->is_valid_column_name($key_name)) {
+            // Don't extract - keep full identifier
+            if (!$this->is_valid_column_name($fk)) {
                 throw new InvalidArgumentException("Invalid foreign key: {$fk}. Only alphanumeric characters and underscores are allowed.");
             }
-            $processed_foreign_keys[] = $key_name;
+            $processed_foreign_keys[] = $fk;  // Keep as is
         }
 
         // Process local keys
         $processed_local_keys = [];
         $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
         foreach ($local_keys_array as $lk) {
-            if (strpos($lk, '.') !== false) {
-                $parts = explode('.', $lk);
-                $key_name = end($parts);
-            } else {
-                $key_name = $lk;
-            }
-            if (!$this->is_valid_column_name($key_name)) {
+            // Don't extract - keep full identifier
+            if (!$this->is_valid_column_name($lk)) {
                 throw new InvalidArgumentException("Invalid local key: {$lk}. Only alphanumeric characters and underscores are allowed.");
             }
-            $processed_local_keys[] = $key_name;
+            $processed_local_keys[] = $lk;  // Keep as is
         }
 
         // Validate key count match
@@ -1500,6 +1769,74 @@ class NestedQueryBuilder
 
         return $this;
     }
+}
+
+
+/**
+ * Nested Query Builder Class
+ * 
+ * Provides nested query capabilities with relation support
+ * 
+ * @package CustomQueryBuilder
+ * @author  Danar Ardiwinanto
+ * @version 1.0.0
+ */
+class NestedQueryBuilder
+{
+    use QueryValidationTrait;
+    use RelationAggregateTrait;
+    /**
+     * @var array Array of with relations
+     */
+    public $with_relations = [];
+
+    /**
+     * @var array Array of pending aggregate functions
+     */
+    public $pending_aggregates = [];
+
+    /**
+     * @var array Array of pending WHERE EXISTS relations
+     */
+    public $pending_where_exists = [];
+
+    /**
+     * @var array Array of pending WHERE aggregate conditions
+     */
+    public $pending_where_aggregates = [];
+
+    /**
+     * @var array Array of pending derived-table JOIN aggregates
+     */
+    public $pending_join_aggregates = [];
+
+    /**
+     * @var object Database instance
+     */
+    public $db;
+
+    /**
+     * Constructor
+     * 
+     * @param object $db_instance Database instance
+     */
+    public function __construct($db_instance)
+    {
+        $this->db = $db_instance;
+    }
+
+    /**
+     * Magic method to call database methods
+     * 
+     * @param string $method Method name
+     * @param array $args Method arguments
+     * @return mixed Method result
+     */
+    public function __call($method, $args)
+    {
+        return call_user_func_array([$this->db, $method], $args);
+    }
+
 
     /**
      * Add WHERE EXISTS condition with callback
@@ -1801,221 +2138,6 @@ class NestedQueryBuilder
         return $this->add_where_exists_relation_internal('OR', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
     }
 
-    // =================================================================
-    // JOIN AGGREGATE METHODS (Derived Table JOIN)
-    // Mirror of CustomQueryBuilder's join_* methods for use inside
-    // with_many / with_one callbacks.
-    // =================================================================
-
-    /**
-     * Internal helper — register a derived-table JOIN aggregate
-     *
-     * @param string        $type       Aggregate type: count|sum|avg|min|max
-     * @param string        $relation   Related table name or raw SQL subquery (e.g. "(SELECT ...) alias")
-     * @param string|array  $foreignKey FK column(s) in the relation table
-     * @param string|array  $localKey   Local key column(s) in the main table
-     * @param string|null   $column     Column to aggregate (null for COUNT)
-     * @param string|null   $alias      Result alias (auto-generated if null)
-     * @param callable|null $callback   Optional callback to add WHERE inside derived table
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    protected function add_join_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $alias = null, $callback = null)
-    {
-        // Detect raw SQL subquery passed as relation (e.g. "(SELECT ...) alias")
-        $is_subquery_relation = ltrim($relation)[0] === '(';
-
-        if (!$is_subquery_relation && !$this->is_valid_table_name($this->extract_table_name($relation))) {
-            throw new InvalidArgumentException("join_{$type}: invalid relation table name '" . htmlspecialchars($relation) . "'");
-        }
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys   = is_array($localKey)   ? $localKey   : [$localKey];
-
-        if (count($foreign_keys) !== count($local_keys)) {
-            throw new InvalidArgumentException("join_{$type}: foreign key count must match local key count.");
-        }
-
-        $type_lower = strtolower($type);
-
-        // For subquery relations the "table name" used in agg functions and default
-        // aliases is the alias portion of the expression (e.g. "transaction_sub"),
-        // not the full subquery string.
-        $relation_ref = $is_subquery_relation
-            ? $this->extract_table_or_alias($relation)
-            : $relation;
-
-        switch ($type_lower) {
-            case 'count':
-                $agg_func      = 'COUNT(*)';
-                $default_alias = $relation_ref . '_count';
-                break;
-            case 'sum':
-                if (!$column) throw new InvalidArgumentException('join_sum: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_sum: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'SUM(' . $this->_quote_agg_column($column, $relation_ref) . ')';
-                $default_alias = $relation_ref . '_sum';
-                break;
-            case 'avg':
-                if (!$column) throw new InvalidArgumentException('join_avg: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_avg: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'AVG(' . $this->_quote_agg_column($column, $relation_ref) . ')';
-                $default_alias = $relation_ref . '_avg';
-                break;
-            case 'min':
-                if (!$column) throw new InvalidArgumentException('join_min: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_min: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'MIN(' . $this->_quote_agg_column($column, $relation_ref) . ')';
-                $default_alias = $relation_ref . '_min';
-                break;
-            case 'max':
-                if (!$column) throw new InvalidArgumentException('join_max: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_max: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'MAX(' . $this->_quote_agg_column($column, $relation_ref) . ')';
-                $default_alias = $relation_ref . '_max';
-                break;
-            case 'custom_calculation':
-                if (!$column) throw new InvalidArgumentException('join_calculation: $expression is required.');
-                if (!$this->is_valid_calculation_expression($column)) {
-                    throw new InvalidArgumentException("join_calculation: invalid expression '" . htmlspecialchars($column) . "'");
-                }
-                $agg_func      = $column; // raw expression, e.g. SUM(a) / SUM(b) * 100
-                $default_alias = $relation_ref . '_calculation';
-                break;
-            default:
-                throw new InvalidArgumentException("Invalid join aggregate type: {$type}");
-        }
-
-        $this->pending_join_aggregates[] = [
-            'type'        => $type_lower,
-            'relation'    => $relation,
-            'foreign_key' => $foreign_keys,
-            'local_key'   => $local_keys,
-            'aggregate'   => $agg_func,
-            'alias'       => $alias ?: $default_alias,
-            'callback'    => $callback,
-        ];
-
-        return $this;
-    }
-
-    /**
-     * Derived-table JOIN COUNT inside a nested relation callback
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_count($relation, $foreignKey, $localKey, $callback = null)
-    {
-        $alias         = is_array($relation) ? current($relation) : null;
-        $relation_name = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('count', $relation_name, $foreignKey, $localKey, null, $alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN SUM inside a nested relation callback
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param string        $column     Column to SUM
-     * @param string|null   $alias      Override result alias
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_sum($relation, $foreignKey, $localKey, $column, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : $relation;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('sum', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN AVG inside a nested relation callback
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param string        $column     Column to AVG
-     * @param string|null   $alias      Override result alias
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_avg($relation, $foreignKey, $localKey, $column, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : $relation;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('avg', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN MIN inside a nested relation callback
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param string        $column     Column to MIN
-     * @param string|null   $alias      Override result alias
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_min($relation, $foreignKey, $localKey, $column, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : $relation;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('min', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN MAX inside a nested relation callback
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param string        $column     Column to MAX
-     * @param string|null   $alias      Override result alias
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_max($relation, $foreignKey, $localKey, $column, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : $relation;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('max', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN CALCULATION inside a nested relation callback
-     *
-     * Mirror of CustomQueryBuilder::join_calculation() for use inside
-     * with_many() / with_one() callbacks.
-     *
-     * Example:
-     * $this->db->with_many('orders', 'user_id', 'id', function($q) {
-     *     $q->join_calculation(
-     *         ['order_items' => 'item_total'],
-     *         'order_id', 'id',
-     *         'SUM(price * quantity)'
-     *     );
-     * })->get('users');
-     *
-     * @param string|array  $relation    Relation table name or ['table' => 'alias']
-     * @param string|array  $foreignKey  FK column(s) in the relation table
-     * @param string|array  $localKey    PK/local column(s) in the main table
-     * @param string        $expression  Mathematical expression with aggregate functions
-     * @param callable|null $callback    Optional WHERE conditions inside derived table
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function join_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : null;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('custom_calculation', $relation_name, $foreignKey, $localKey, $expression, $resolved_alias, $callback);
-    }
 }
 
 /**
@@ -2037,6 +2159,7 @@ class NestedQueryBuilder
 class CustomQueryBuilder extends CI_DB_query_builder
 {
     use QueryValidationTrait;
+    use RelationAggregateTrait;
     /**
      * @var array Array of with relations for eager loading
      */
@@ -3496,57 +3619,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
         return $this;
     }
 
-    /**
-     * Add eager loading relation
-     * 
-     * @param string|array $relation Relation name or array with alias
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param bool $multiple Whether relation returns multiple records
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function with($relation, $foreignKey, $localKey, $multiple = true, $callback = null)
-    {
-        $relation_name = '';
-        $alias = '';
-
-        if (!is_bool($multiple)) throw new InvalidArgumentException('Parameter $multiple must be a boolean value (true or false).');
-
-        if (is_array($relation)) {
-            if (count($relation) === 1) {
-                $relation_name = key($relation);
-                $alias = current($relation);
-            } else {
-                $relation_name = reset($relation);
-                $alias = $relation_name;
-            }
-        } else {
-            $relation_name = $relation;
-            $alias = $relation;
-        }
-
-        // VALIDASI KEAMANAN: Validasi relation name (extract base table name for validation, alias is allowed)
-        $relation_name_for_validation = $this->extract_table_name($relation_name);
-        if (!$this->is_valid_table_name($relation_name_for_validation)) {
-            throw new InvalidArgumentException("Invalid relation name: {$relation_name}. Only alphanumeric characters and underscores are allowed.");
-        }
-
-        $processed_local_keys = $this->process_keys($localKey, 'local key');
-        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key');
-        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys);
-
-        $this->with_relations[] = [
-            'relation' => $relation_name,
-            'foreign_key' => $processed_foreign_keys,
-            'local_key' => $processed_local_keys,
-            'multiple' => $multiple,
-            'callback' => $callback,
-            'alias' => $alias
-        ];
-        return $this;
-    }
 
     /**
      * Add eager loading relation that returns single record
@@ -3608,367 +3680,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
         return $this->with($relation, $foreignKey, $localKey, true, $callback);
     }
 
-    /**
-     * Add eager loading relation with aggregation (internal helper)
-     * 
-     * @param string $type Aggregate type ('count', 'sum', 'avg', 'max', 'min')
-     * @param string|array $relation Relation name or array with alias
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param string|null $column Column to aggregate (null for count)
-     * @param bool $is_custom_expression Whether $column is a custom SQL expression
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
-     * @return $this
-     */
-    protected function add_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $is_custom_expression = false, $callback = null)
-    {
-        if (is_callable($is_custom_expression)) {
-            $callback = $is_custom_expression;
-            $is_custom_expression = true;
-        }
-        // Validate column if provided
-        if ($column !== null) {
-            $this->validate_column_or_expression($column, $is_custom_expression);
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $default_alias = $relation_name . '_' . $type;
-        $aggregate_alias = is_array($relation) ? current($relation) : $default_alias;
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => $type,
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $aggregate_alias,
-            'callback' => $callback,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression
-        ];
-
-        return $this;
-    }
-
-    /**
-     * Add eager loading relation with count aggregation
-     * 
-     * Now works as subquery in main SELECT clause for better sorting capability.
-     * 
-     * Example:
-     * // Get users with their order count (can be sorted)
-     * $users = $this->db->with_count('orders', 'user_id', 'id')
-     *                   ->order_by('orders_count', 'DESC')
-     *                   ->get('users');
-     * // Result: $user->orders_count
-     * 
-     * // With alias
-     * $this->db->with_count(['orders' => 'total_orders'], 'user_id', 'id');
-     * // Result: $user->total_orders
-     * 
-     * // Can be used with with_many() and with_one()
-     * $users = $this->db->with_count('orders', 'user_id', 'id')
-     *                   ->with_many('posts', 'user_id', 'id')
-     *                   ->get('users');
-     * 
-     * // Can be used in callbacks (for relation subqueries)
-     * $posts = $this->db->with_many('comments', 'post_id', 'id', function($query) {
-     *     $query->with_count('likes', 'comment_id', 'id');
-     * })->get('posts');
-     * 
-     * @param string|array $relation Relation name or array with alias
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
-     * @return $this
-     */
-    public function with_count($relation, $foreignKey, $localKey, $callback = null)
-    {
-        return $this->add_aggregate('count', $relation, $foreignKey, $localKey, null, false, $callback);
-    }
-
-    /**
-     * Add eager loading relation with sum aggregation
-     * 
-     * Now works as subquery in main SELECT clause for better sorting capability.
-     * 
-     * Example:
-     * // Get users with total order amount (can be sorted)
-     * $users = $this->db->with_sum('orders', 'user_id', 'id', 'total_amount')
-     *                   ->order_by('orders_sum', 'DESC')
-     *                   ->get('users');
-     * // Result: $user->orders_sum
-     * 
-     * // With alias
-     * $this->db->with_sum(['orders' => 'total_spent'], 'user_id', 'id', 'total_amount');
-     * // Result: $user->total_spent
-     * 
-     * // With custom expression (mathematical operations)
-     * $invoices = $this->db->with_sum(['job' => 'total_after_discount'], 
-     *     'idinvoice', 'id', '(job_total_price_before_discount - job_discount)', true);
-     * // Result: $invoice->total_after_discount
-     * 
-     * // With callback for WHERE conditions
-     * $users = $this->db->with_sum('orders', 'user_id', 'id', 'total_amount', false, function($query) {
-     *     $query->where('status', 'completed')
-     *           ->where('created_at >=', '2023-01-01');
-     * })->get('users');
-     * 
-     * // With custom expression and callback
-     * $invoices = $this->db->with_sum(['job' => 'total_after_discount'], 
-     *     'idinvoice', 'id', '(job_total_price_before_discount - job_discount)', true, 
-     *     function($query) {
-     *         $query->where('status', 'active');
-     *     }
-     * );
-     * 
-     * // Can be used with with_many() and with_one()
-     * $users = $this->db->with_sum('orders', 'user_id', 'id', 'total_amount')
-     *                   ->with_many('posts', 'user_id', 'id')
-     *                   ->get('users');
-     * 
-     * @param string|array $relation Relation name or array with alias
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param string $column Column to sum or custom expression
-     * @param bool $is_custom_expression Whether $column is a custom SQL expression (default: false)
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
-     * @return $this
-     */
-    public function with_sum($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
-    {
-        return $this->add_aggregate('sum', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
-    }
-
-    /**
-     * Add eager loading relation with average aggregation
-     * 
-     * Example:
-     * // Get users with average order amount
-     * $users = $this->db->with_avg('orders', 'user_id', 'id', 'total_amount')->get('users');
-     * // Result: $user->orders_avg
-     * 
-     * // With alias
-     * $this->db->with_avg(['orders' => 'avg_order_value'], 'user_id', 'id', 'total_amount');
-     * // Result: $user->avg_order_value
-     * 
-     * // With custom expression (mathematical operations)
-     * $orders = $this->db->with_avg('items', 'order_id', 'id', '(price * quantity)', true);
-     * // Result: $order->items_avg (average of calculated values)
-     * 
-     * // With callback for WHERE conditions
-     * $users = $this->db->with_avg('orders', 'user_id', 'id', 'total_amount', false, function($query) {
-     *     $query->where('status', 'completed')
-     *           ->where_between('created_at', ['2023-01-01', '2023-12-31']);
-     * })->get('users');
-     * 
-     * // With custom expression and callback
-     * $orders = $this->db->with_avg('items', 'order_id', 'id', '(price * quantity)', true,
-     *     function($query) {
-     *         $query->where('is_active', 1);
-     *     }
-     * );
-     * 
-     * @param string|array $relation Relation name or array with alias
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param string $column Column to calculate average or custom expression
-     * @param bool $is_custom_expression Whether $column is a custom SQL expression (default: false)
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
-     * @return $this
-     */
-    public function with_avg($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
-    {
-        return $this->add_aggregate('avg', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
-    }
-
-    /**
-     * Add eager loading relation with maximum value aggregation
-     * 
-     * Example:
-     * // Get users with their highest order amount
-     * $users = $this->db->with_max('orders', 'user_id', 'id', 'total_amount')->get('users');
-     * // Result: $user->orders_max
-     * 
-     * // Get posts with latest comment date
-     * $this->db->with_max(['comments' => 'latest_comment'], 'post_id', 'id', 'created_at');
-     * // Result: $post->latest_comment
-     * 
-     * // With custom expression (mathematical operations)
-     * $products = $this->db->with_max('sales', 'product_id', 'id', '(base_price + tax)', true);
-     * // Result: $product->sales_max (maximum of calculated values)
-     * 
-     * // With callback for WHERE conditions
-     * $users = $this->db->with_max('orders', 'user_id', 'id', 'total_amount', false, function($query) {
-     *     $query->where('status', 'completed')
-     *           ->where('payment_status', 'paid');
-     * })->get('users');
-     * 
-     * // With custom expression and callback
-     * $products = $this->db->with_max('sales', 'product_id', 'id', '(base_price + tax)', true,
-     *     function($query) {
-     *         $query->where('sale_date >=', '2023-01-01');
-     *     }
-     * );
-     * 
-     * @param string|array $relation Relation name or array with alias
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param string $column Column to find maximum value or custom expression
-     * @param bool $is_custom_expression Whether $column is a custom SQL expression (default: false)
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
-     * @return $this
-     */
-    public function with_max($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
-    {
-        return $this->add_aggregate('max', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
-    }
-
-    /**
-     * Add eager loading relation with minimum value aggregation
-     * 
-     * Example:
-     * // Get users with their lowest order amount
-     * $users = $this->db->with_min('orders', 'user_id', 'id', 'total_amount')->get('users');
-     * // Result: $user->orders_min
-     * 
-     * // Get categories with earliest post date
-     * $this->db->with_min(['posts' => 'first_post'], 'category_id', 'id', 'created_at');
-     * // Result: $category->first_post
-     * 
-     * // With custom expression (mathematical operations)
-     * $transactions = $this->db->with_min('payments', 'transaction_id', 'id', '(amount - discount)', true);
-     * // Result: $transaction->payments_min (minimum of calculated values)
-     * 
-     * // With callback for WHERE conditions
-     * $users = $this->db->with_min('orders', 'user_id', 'id', 'total_amount', false, function($query) {
-     *     $query->where('status', 'completed')
-     *           ->where('discount', 0);  // Orders without discount
-     * })->get('users');
-     * 
-     * // With custom expression and callback
-     * $transactions = $this->db->with_min('payments', 'transaction_id', 'id', '(amount - discount)', true,
-     *     function($query) {
-     *         $query->where('payment_method', 'cash')
-     *               ->where('is_verified', 1);
-     *     }
-     * );
-     * 
-     * @param string|array $relation Relation name or array with alias
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param string $column Column to find minimum value or custom expression
-     * @param bool $is_custom_expression Whether $column is a custom SQL expression (default: false)
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for relation query
-     * @return $this
-     */
-    public function with_min($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)
-    {
-        return $this->add_aggregate('min', $relation, $foreignKey, $localKey, $column, $is_custom_expression, $callback);
-    }
-
-    // =================================================================
-    // JOIN AGGREGATE METHODS (Derived Table JOIN — lighter DB load)
-    // Pre-aggregates the relation table in a single subquery then JOINs
-    // back to the main table — scans relation table once, regardless of
-    // how many rows the main query returns.
-    // Use these instead of with_sum/with_count/etc. when result sets
-    // are large and you only need the scalar aggregate value.
-    // =================================================================
-
-    /**
-     * Internal helper — register a derived-table JOIN aggregate
-     *
-     * @param string        $type       Aggregate type: count|sum|avg|min|max
-     * @param string        $relation   Related table name or raw SQL subquery (e.g. "(SELECT ...) alias")
-     * @param string|array  $foreignKey FK column(s) in the relation table
-     * @param string|array  $localKey   Local key column(s) in the main table
-     * @param string|null   $column     Column to aggregate (null for COUNT)
-     * @param string|null   $alias      Result alias (auto-generated if null)
-     * @param callable|null $callback   Optional callback to add WHERE inside derived table
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    protected function add_join_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $alias = null, $callback = null)
-    {
-        // Detect raw SQL subquery passed as relation (e.g. "(SELECT ...) alias")
-        $is_subquery_relation = ltrim($relation)[0] === '(';
-
-        if (!$is_subquery_relation && !$this->is_valid_table_name($this->extract_table_name($relation))) {
-            throw new InvalidArgumentException("join_{$type}: invalid relation table name '" . htmlspecialchars($relation) . "'");
-        }
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys   = is_array($localKey)   ? $localKey   : [$localKey];
-
-        if (count($foreign_keys) !== count($local_keys)) {
-            throw new InvalidArgumentException("join_{$type}: foreign key count must match local key count.");
-        }
-
-        $type_lower = strtolower($type);
-
-        // For subquery relations the "table name" used in agg functions and default
-        // aliases is the alias portion of the expression (e.g. "transaction_sub"),
-        // not the full subquery string.
-        $relation_ref = $is_subquery_relation
-            ? $this->extract_table_or_alias($relation)
-            : $relation;
-
-        switch ($type_lower) {
-            case 'count':
-                $agg_func      = 'COUNT(*)';
-                $default_alias = $relation_ref . '_count';
-                break;
-            case 'sum':
-                if (!$column) throw new InvalidArgumentException('join_sum: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_sum: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'SUM(' . $this->_quote_agg_column($column, $relation_ref) . ')';
-                $default_alias = $relation_ref . '_sum';
-                break;
-            case 'avg':
-                if (!$column) throw new InvalidArgumentException('join_avg: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_avg: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'AVG(' . $this->_quote_agg_column($column, $relation_ref) . ')';
-                $default_alias = $relation_ref . '_avg';
-                break;
-            case 'min':
-                if (!$column) throw new InvalidArgumentException('join_min: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_min: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'MIN(' . $this->_quote_agg_column($column, $relation_ref) . ')';
-                $default_alias = $relation_ref . '_min';
-                break;
-            case 'max':
-                if (!$column) throw new InvalidArgumentException('join_max: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_max: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'MAX(' . $this->_quote_agg_column($column, $relation_ref) . ')';
-                $default_alias = $relation_ref . '_max';
-                break;
-            case 'custom_calculation':
-                if (!$column) throw new InvalidArgumentException('join_calculation: $expression is required.');
-                if (!$this->is_valid_calculation_expression($column)) {
-                    throw new InvalidArgumentException("join_calculation: invalid expression '" . htmlspecialchars($column) . "'");
-                }
-                $agg_func      = $column; // raw expression, e.g. SUM(a) / SUM(b) * 100
-                $default_alias = $relation_ref . '_calculation';
-                break;
-            default:
-                throw new InvalidArgumentException("Invalid join aggregate type: {$type}");
-        }
-
-        $this->pending_join_aggregates[] = [
-            'type'        => $type_lower,
-            'relation'    => $relation,
-            'foreign_key' => $foreign_keys,
-            'local_key'   => $local_keys,
-            'aggregate'   => $agg_func,
-            'alias'       => $alias ?: $default_alias,
-            'callback'    => $callback,
-        ];
-
-        return $this;
-    }
 
     /**
      * Build and apply all pending derived-table JOIN aggregates
@@ -4092,510 +3803,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
     }
 
-    /**
-     * Derived-table JOIN COUNT — lighter DB load than with_count()
-     *
-     * Scans the relation table once via GROUP BY instead of a correlated subquery per row.
-     *
-     * Example:
-     * $users = $this->db->join_count('orders', 'user_id', 'id')
-     *                   ->order_by('orders_count', 'DESC')
-     *                   ->get('users');
-     * // $user->orders_count
-     *
-     * // With alias + callback filter
-     * $users = $this->db->join_count(['orders' => 'completed_orders'], 'user_id', 'id', function($q) {
-     *     $q->where('status', 'completed');
-     * })->get('users');
-     * // $user->completed_orders
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_count($relation, $foreignKey, $localKey, $callback = null)
-    {
-        $alias         = is_array($relation) ? current($relation) : null;
-        $relation_name = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('count', $relation_name, $foreignKey, $localKey, null, $alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN SUM — lighter DB load than with_sum()
-     *
-     * Scans the relation table once via GROUP BY instead of a correlated subquery per row.
-     *
-     * Example:
-     * $users = $this->db->join_sum('orders', 'user_id', 'id', 'total_amount')
-     *                   ->order_by('orders_sum', 'DESC')
-     *                   ->get('users');
-     * // $user->orders_sum
-     *
-     * // With alias
-     * $users = $this->db->join_sum(['orders' => 'total_spent'], 'user_id', 'id', 'total_amount')
-     *                   ->get('users');
-     * // $user->total_spent
-     *
-     * // With callback
-     * $users = $this->db->join_sum('orders', 'user_id', 'id', 'total_amount', null, function($q) {
-     *     $q->where('status', 'completed');
-     * })->get('users');
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param string        $column     Column to SUM
-     * @param string|null   $alias      Override result alias (optional when using array syntax)
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_sum($relation, $foreignKey, $localKey, $column, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : $relation;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('sum', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN AVG — lighter DB load than with_avg()
-     *
-     * Example:
-     * $users = $this->db->join_avg('orders', 'user_id', 'id', 'total_amount')->get('users');
-     * // $user->orders_avg
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param string        $column     Column to AVG
-     * @param string|null   $alias      Override result alias
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_avg($relation, $foreignKey, $localKey, $column, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : $relation;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('avg', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN MIN — lighter DB load than with_min()
-     *
-     * Example:
-     * $users = $this->db->join_min('orders', 'user_id', 'id', 'total_amount')->get('users');
-     * // $user->orders_min
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param string        $column     Column to MIN
-     * @param string|null   $alias      Override result alias
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_min($relation, $foreignKey, $localKey, $column, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : $relation;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('min', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN MAX — lighter DB load than with_max()
-     *
-     * Example:
-     * $users = $this->db->join_max(['orders' => 'highest_order'], 'user_id', 'id', 'total_amount')
-     *                   ->get('users');
-     * // $user->highest_order
-     *
-     * @param string|array  $relation   Table name or ['table' => 'alias']
-     * @param string|array  $foreignKey FK column(s) in relation table
-     * @param string|array  $localKey   PK/local column(s) in main table
-     * @param string        $column     Column to MAX
-     * @param string|null   $alias      Override result alias
-     * @param callable|null $callback   Optional WHERE conditions inside derived table
-     * @return $this
-     */
-    public function join_max($relation, $foreignKey, $localKey, $column, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : $relation;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('max', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
-    }
-
-    /**
-     * Derived-table JOIN CALCULATION — lighter DB load than with_calculation()
-     *
-     * Pre-aggregates the relation table once in a derived-table JOIN using a custom
-     * mathematical expression. Scans the relation table once regardless of how many
-     * rows the main query returns.
-     *
-     * Use this instead of with_calculation() when result sets are large.
-     *
-     * Example:
-     * // Efficiency: (finished / total) * 100
-     * $orders = $this->db->join_calculation(
-     *     ['order_items' => 'efficiency_percentage'],
-     *     'order_id', 'id',
-     *     '(SUM(finished_qty) / SUM(total_qty)) * 100'
-     * )->get('orders');
-     * // $order->efficiency_percentage
-     *
-     * // Profit margin with optional callback filter
-     * $products = $this->db->join_calculation(
-     *     ['sales' => 'profit_margin'],
-     *     'product_id', 'id',
-     *     '((SUM(selling_price * quantity) - SUM(cost_price * quantity)) / SUM(selling_price * quantity)) * 100',
-     *     function($q) { $q->where('status', 'completed'); }
-     * )->get('products');
-     * // $product->profit_margin
-     *
-     * // Production duration using DATEDIFF
-     * $transactions = $this->db->join_calculation(
-     *     ['transaction_step' => 'production_duration_days'],
-     *     'idtransaction_detail', 'idtransaction_detail',
-     *     'DATEDIFF(MAX(date), MIN(date))'
-     * )->get('transaction_detail');
-     *
-     * Supported in expression:
-     * - Basic math: +, -, *, /, %
-     * - Aggregate functions: SUM, AVG, COUNT, MIN, MAX
-     * - Date functions: DATEDIFF, TIMESTAMPDIFF
-     * - Conditional: CASE WHEN ... THEN ... END
-     * - Mathematical functions: ROUND, FLOOR, CEIL, ABS
-     *
-     * @param string|array  $relation    Relation table name or ['table' => 'alias']
-     * @param string|array  $foreignKey  FK column(s) in the relation table
-     * @param string|array  $localKey    PK/local column(s) in the main table
-     * @param string        $expression  Mathematical expression with aggregate functions
-     * @param callable|null $callback    Optional WHERE conditions inside derived table
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function join_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)
-    {
-        $resolved_alias = is_array($relation) ? current($relation) : null;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
-        return $this->add_join_aggregate('custom_calculation', $relation_name, $foreignKey, $localKey, $expression, $resolved_alias, $callback);
-    }
-
-    /**
-     * Add calculated field using custom mathematical expression with aggregate functions
-     * 
-     * This method allows you to create complex calculations using multiple aggregate functions
-     * and mathematical operations in a subquery that becomes part of the main SELECT clause.
-     * 
-     * Example:
-     * // Calculate efficiency percentage: (finished_qty / total_qty) * 100
-     * $orders = $this->db->with_calculation(['order_items' => 'efficiency_percentage'], 
-     *     'order_id', 'id', 
-     *     '(SUM(finished_qty) / SUM(total_qty)) * 100'
-     * )->get('orders');
-     * // Result: $order->efficiency_percentage
-     * 
-     * // Calculate profit margin: ((revenue - cost) / revenue) * 100
-     * $products = $this->db->with_calculation(['sales' => 'profit_margin'], 
-     *     'product_id', 'id',
-     *     '((SUM(selling_price * quantity) - SUM(cost_price * quantity)) / SUM(selling_price * quantity)) * 100'
-     * )->get('products');
-     * 
-     * // Calculate average order value with discount
-     * $customers = $this->db->with_calculation(['orders' => 'avg_order_with_discount'], 
-     *     'customer_id', 'id',
-     *     'AVG(total_amount - discount_amount)'
-     * )->get('customers');
-     * 
-     * // Calculate production duration in days using DATEDIFF
-     * $transactions = $this->db->with_calculation(['transaction_step' => 'production_duration_days'], 
-     *     'idtransaction_detail', 'idtransaction_detail',
-     *     'DATEDIFF(MAX(date), MIN(date))'
-     * )->get('transaction_detail');
-     * 
-     * // Calculate weighted average with callback for conditions
-     * $products = $this->db->with_calculation(['reviews' => 'weighted_rating'], 
-     *     'product_id', 'id',
-     *     'SUM(rating * helpful_votes) / SUM(helpful_votes)',
-     *     function($query) {
-     *         $query->where('status', 'approved')
-     *               ->where('helpful_votes >', 0);
-     *     }
-     * )->get('products');
-     * 
-     * // Multiple calculations in one query
-     * $orders = $this->db->with_calculation(['order_items' => 'total_revenue'], 'order_id', 'id', 'SUM(price * quantity)')
-     *                   ->with_calculation(['order_items' => 'total_cost'], 'order_id', 'id', 'SUM(cost * quantity)')
-     *                   ->with_calculation(['order_items' => 'profit'], 'order_id', 'id', 'SUM((price - cost) * quantity)')
-     *                   ->get('orders');
-     * 
-     * Supported mathematical operations:
-     * - Basic math: +, -, *, /, %
-     * - Aggregate functions: SUM, AVG, COUNT, MIN, MAX
-     * - Date functions: DATEDIFF, TIMESTAMPDIFF
-     * - Conditional: CASE WHEN ... THEN ... END
-     * - Mathematical functions: ROUND, FLOOR, CEIL, ABS
-     * 
-     * @param string|array $relation Relation name or array with alias
-     * @param string|array $foreignKey Foreign key(s) in the relation table
-     * @param string|array $localKey Local key(s) in the main table
-     * @param string $expression Mathematical expression with aggregate functions
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional WHERE conditions
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function with_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)
-    {
-        if (!is_callable($callback) && $callback) throw new InvalidArgumentException('Callback must be callable');
-        if (!$this->is_valid_calculation_expression($expression)) {
-            throw new InvalidArgumentException("Invalid calculation expression: {$expression}");
-        }
-
-        $relation_name = is_array($relation) ? key($relation) : $relation;
-        $calc_alias = is_array($relation) ? current($relation) : $relation_name . '_calculation';
-
-        $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys = is_array($localKey) ? $localKey : [$localKey];
-
-        $this->pending_aggregates[] = [
-            'type' => 'custom_calculation',
-            'relation' => $relation_name,
-            'foreign_key' => $foreign_keys,
-            'local_key' => $local_keys,
-            'alias' => $calc_alias,
-            'callback' => $callback,
-            'column' => $expression,
-            'is_custom_expression' => true
-        ];
-
-        return $this;
-    }
-
-    /**
-     * Add WHERE condition based on calculated field alias (simplified syntax)
-     *
-     * This method provides a simplified way to filter by aggregate fields that were
-     * added using with_calculation(), with_sum(), with_avg(), with_min(), or with_max().
-     * It automatically references the aggregate subquery in the WHERE clause.
-     *
-     * IMPORTANT: You must call with_calculation() or with_sum()/with_avg()/etc. BEFORE
-     * calling where_aggregate() so the alias is registered.
-     *
-     * Example:
-     * // Filter by calculated field
-     * $this->db->with_calculation(['transaction_detail' => 'sales_price'], 'idtransaction', 'idtransaction', 'SUM(price)')
-     *          ->where_aggregate('sales_price >', 10000)
-     *          ->get('transaction');
-     *
-     * // Filter by sum aggregate
-     * $this->db->with_sum(['orders' => 'total_spent'], 'user_id', 'id', 'amount')
-     *          ->where_aggregate('total_spent >=', 5000)
-     *          ->get('users');
-     *
-     * // Multiple conditions
-     * $this->db->with_avg(['reviews' => 'avg_rating'], 'product_id', 'id', 'rating')
-     *          ->where_aggregate('avg_rating >', 4.5)
-     *          ->where_aggregate('avg_rating <', 5.0)
-     *          ->get('products');
-     *
-     * // With OR condition
-     * $this->db->with_sum(['orders' => 'total_amount'], 'user_id', 'id', 'amount')
-     *          ->where_aggregate('total_amount >', 10000)
-     *          ->or_where_aggregate('total_amount =', 0)
-     *          ->get('users');
-     *
-     * @param string $condition Condition string in format "alias operator" (e.g., "sales_price >", "total_count >=")
-     * @param mixed $value Value to compare against
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function where_aggregate($condition, $value)
-    {
-        return $this->add_where_calculated('AND', $condition, $value);
-    }
-
-    /**
-     * Add OR WHERE condition based on calculated field alias (simplified syntax)
-     *
-     * Example:
-     * $this->db->with_sum(['orders' => 'total_amount'], 'user_id', 'id', 'amount')
-     *          ->where_aggregate('total_amount >', 5000)
-     *          ->or_where_aggregate('total_amount =', 0)
-     *          ->get('users');
-     *
-     * @param string $condition Condition string in format "alias operator"
-     * @param mixed $value Value to compare against
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function or_where_aggregate($condition, $value)
-    {
-        return $this->add_where_calculated('OR', $condition, $value);
-    }
-
-    /**
-     * Internal method to add WHERE condition for calculated fields
-     *
-     * @param string $condition_type 'AND' or 'OR'
-     * @param string $condition Condition string with alias and operator
-     * @param mixed $value Value to compare against
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    protected function add_where_calculated($condition_type, $condition, $value)
-    {
-        // Parse condition string to extract alias and operator
-        $pattern = '/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|>|<|>=|<=|!=|<>|BETWEEN|NOT\\s+BETWEEN)\s*$/i';
-        if (!preg_match($pattern, trim($condition), $matches)) {
-            throw new InvalidArgumentException("Invalid condition format: '{$condition}'. Expected format: 'alias operator' (e.g., 'sales_price >', 'total_count >=', 'sales_price BETWEEN')");
-        }
-
-        $alias = $matches[1];
-        $operator = trim($matches[2]); // Keep original case for BETWEEN
-
-        // Find the aggregate configuration by alias
-        $aggregate_config = null;
-        foreach ($this->pending_aggregates as $config) {
-            if ($config['alias'] === $alias) {
-                $aggregate_config = $config;
-                break;
-            }
-        }
-
-        if ($aggregate_config === null) {
-            throw new InvalidArgumentException("Alias '{$alias}' not found. You must call with_calculation(), with_sum(), with_avg(), with_min(), or with_max() with this alias before using where_calculated().");
-        }
-
-        // Map aggregate type from pending_aggregates to where_aggregate type
-        $type_mapping = [
-            'count' => 'count',
-            'sum' => 'sum',
-            'avg' => 'avg',
-            'min' => 'min',
-            'max' => 'max',
-            'custom_calculation' => 'custom'
-        ];
-
-        $aggregate_type = isset($type_mapping[$aggregate_config['type']])
-            ? $type_mapping[$aggregate_config['type']]
-            : 'custom';
-
-        // Use the aggregate configuration to build where_aggregate
-        return $this->add_where_aggregate(
-            $condition_type,
-            $aggregate_type,
-            $aggregate_config['relation'],
-            $aggregate_config['foreign_key'],
-            $aggregate_config['local_key'],
-            $operator,
-            $value,
-            $aggregate_config['column'],
-            $aggregate_config['is_custom_expression'],
-            $aggregate_config['callback']
-        );
-    }
-
-    /**
-     * Internal method to add WHERE aggregate condition
-     *
-     * @param string $condition_type 'AND' or 'OR'
-     * @param string $type Aggregate type
-     * @param string $relation Related table name
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param string $operator Comparison operator
-     * @param mixed $value Value to compare against
-     * @param string|null $column Column name or expression
-     * @param bool $is_custom_expression Whether column is custom expression
-     * @param callable|null $callback Optional callback
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    protected function add_where_aggregate($condition_type, $type, $relation, $foreignKey, $localKey, $operator, $value, $column = null, $is_custom_expression = false, $callback = null)
-    {
-        // Validate aggregate type
-        $allowed_types = ['count', 'sum', 'avg', 'min', 'max', 'custom'];
-        $type = strtolower($type);
-        if (!in_array($type, $allowed_types)) {
-            throw new InvalidArgumentException("Invalid aggregate type: {$type}. Allowed types: " . implode(', ', $allowed_types));
-        }
-
-        // Validate operator
-        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>', 'BETWEEN', 'NOT BETWEEN'];
-        if (!in_array($operator, $allowed_operators)) {
-            throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
-        }
-
-        // Validate column for non-count types
-        if ($type !== 'count' && empty($column)) {
-            throw new InvalidArgumentException("Column is required for aggregate type: {$type}");
-        }
-
-        // Validate is_custom_expression is boolean
-        if (!is_bool($is_custom_expression)) {
-            throw new InvalidArgumentException("Parameter is_custom_expression must be boolean, " . gettype($is_custom_expression) . " given.");
-        }
-
-        // Validate column/expression
-        if ($column !== null) {
-            if ($type === 'custom') {
-                if (!$this->is_valid_calculation_expression($column)) {
-                    throw new InvalidArgumentException("Invalid calculation expression: {$column}");
-                }
-            } elseif ($is_custom_expression) {
-                if (!$this->is_valid_custom_expression($column)) {
-                    throw new InvalidArgumentException("Invalid custom expression: {$column}. Expression contains potentially dangerous characters or patterns.");
-                }
-            } else {
-                if (!$this->is_valid_column_name($column)) {
-                    throw new InvalidArgumentException("Invalid column name: {$column}. Only alphanumeric characters and underscores are allowed.");
-                }
-            }
-        }
-
-        // Process foreign keys
-        $processed_foreign_keys = [];
-        $foreign_keys_array = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        foreach ($foreign_keys_array as $fk) {
-            // Don't extract - keep full identifier
-            if (!$this->is_valid_column_name($fk)) {
-                throw new InvalidArgumentException("Invalid foreign key: {$fk}. Only alphanumeric characters and underscores are allowed.");
-            }
-            $processed_foreign_keys[] = $fk;  // Keep as is
-        }
-
-        // Process local keys
-        $processed_local_keys = [];
-        $local_keys_array = is_array($localKey) ? $localKey : [$localKey];
-        foreach ($local_keys_array as $lk) {
-            // Don't extract - keep full identifier
-            if (!$this->is_valid_column_name($lk)) {
-                throw new InvalidArgumentException("Invalid local key: {$lk}. Only alphanumeric characters and underscores are allowed.");
-            }
-            $processed_local_keys[] = $lk;  // Keep as is
-        }
-
-        // Validate key count match
-        if (count($processed_foreign_keys) !== count($processed_local_keys)) {
-            throw new InvalidArgumentException('Number of foreign keys must match number of local keys');
-        }
-
-        // Store pending where aggregate
-        $this->pending_where_aggregates[] = [
-            'condition_type' => $condition_type,
-            'type' => $type,
-            'relation' => $relation,
-            'foreign_key' => $processed_foreign_keys,
-            'local_key' => $processed_local_keys,
-            'operator' => $operator,
-            'value' => $value,
-            'column' => $column,
-            'is_custom_expression' => $is_custom_expression,
-            'callback' => $callback
-        ];
-
-        return $this;
-    }
 
     /**
      * Pluck a single column's values from the result set as a flat array.
