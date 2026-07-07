@@ -2528,6 +2528,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
     protected $_executed_queries = [];
 
     /**
+     * @var array Stack of bracket-open positions for in-flight raw group_start()
+     * calls, used by group_end() to detect and unwind an empty group. A stack
+     * (not a single value) because group_start()/group_end() pairs can nest.
+     */
+    protected $_manual_group_stack = [];
+
+    /**
      * Get the parent table name or alias from current query
      * 
      * This helper function extracts the main table name/alias from the current query builder state.
@@ -3676,8 +3683,48 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Override of the native group_start() (and, by extension, or_group_start() /
+     * not_group_start() / or_not_group_start(), which all call this internally)
+     * to record the bracket-open position for the empty-group protection in
+     * group_end() below.
+     *
+     * @param string $not
+     * @param string $type
+     * @return $this
+     */
+    public function group_start($not = '', $type = 'AND ')
+    {
+        $this->_manual_group_stack[] = count($this->qb_where);
+        return parent::group_start($not, $type);
+    }
+
+    /**
+     * Override of the native group_end() — if nothing was added between the
+     * matching group_start() and this call (e.g. conditional logic in between
+     * ended up adding no conditions), remove the bracket-open entry instead of
+     * emitting "( )", which MySQL rejects with a syntax error. Mirrors the
+     * same protection group()/or_group() already get via
+     * _execute_group_immediately(), for callers using the raw
+     * group_start()/group_end() pair directly.
+     *
+     * @return $this
+     */
+    public function group_end()
+    {
+        $bracket_open_pos = array_pop($this->_manual_group_stack);
+
+        if ($bracket_open_pos !== null && count($this->qb_where) - 1 === $bracket_open_pos) {
+            array_pop($this->qb_where);
+            $this->qb_where_group_started = false;
+            return $this;
+        }
+
+        return parent::group_end();
+    }
+
+    /**
      * Group WHERE conditions with callback
-     * 
+     *
      * Example:
      * $this->db->where('status', 'active')
      *          ->group(function($query) {
@@ -5056,14 +5103,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->group_start();
         }
 
-        // Index of the bracket-open entry we just appended. If the callback
-        // (e.g. a when()/unless() whose condition turned out false, with no
-        // matching default) ends up adding nothing, qb_where's length will
-        // still equal $bracket_open_pos + 1 afterwards — used below to detect
-        // and unwind an empty group instead of emitting "( )", which MySQL
-        // rejects with a syntax error.
-        $bracket_open_pos = count($this->qb_where) - 1;
-
         try {
             $callback($this);
 
@@ -5110,21 +5149,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         $this->_in_group_context--;
 
-        // Nothing was added inside the brackets — remove the bracket-open
-        // entry and skip group_end() entirely, rather than emitting "( )".
-        if (count($this->qb_where) - 1 === $bracket_open_pos) {
-            array_pop($this->qb_where);
-
-            // group_start() set this flag expecting the first condition inside
-            // the group to consume it (stripping its own AND/OR prefix). Since
-            // no condition ever ran, the flag is left dangling — without this
-            // reset, the NEXT where()/or_where() call anywhere after this
-            // group would wrongly lose its connector too.
-            $this->qb_where_group_started = false;
-
-            return $this;
-        }
-
+        // group_end() (overridden below) detects on its own whether anything
+        // was actually added since the matching group_start() and unwinds an
+        // empty group instead of emitting "( )".
         $this->group_end();
         return $this;
     }
@@ -6353,6 +6380,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // gets spliced into the subquery's own qb_where instead of the outer one's.
         $this->_pending_where_reorder_buffer = [];
         $this->_call_order_seq = 0;
+        $this->_manual_group_stack = [];
         return parent::reset_query();
     }
 
