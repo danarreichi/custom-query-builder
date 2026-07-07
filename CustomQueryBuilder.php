@@ -866,6 +866,276 @@ trait RelationAggregateTrait
     protected $_in_group_context = 0;
 
     /**
+     * @var int Monotonically increasing counter used to preserve the original
+     * call-order of deferred WHERE conditions (where_exists_relation, where_has,
+     * where_aggregate, etc.) relative to each other and to plain where()/or_where()
+     * calls that were already sitting in qb_where at capture time.
+     */
+    protected $_call_order_seq = 0;
+
+    /**
+     * @var array Buffer of deferred WHERE entries waiting to be spliced back into
+     * qb_where at their originally-captured position. Populated by _defer_where_append()
+     * and drained by _flush_where_reorder_buffer().
+     */
+    protected $_pending_where_reorder_buffer = [];
+
+    /**
+     * Resolve the object that actually owns the real $qb_where array.
+     *
+     * CustomQueryBuilder extends CI_DB_query_builder and owns qb_where directly.
+     * NestedQueryBuilder is a plain wrapper around a $db instance (proxying
+     * where()/or_where() via __call()) and has no qb_where of its own — for
+     * reordering purposes it must always operate on $this->db instead.
+     *
+     * @return object
+     */
+    protected function _qbw_target()
+    {
+        return ($this instanceof NestedQueryBuilder) ? $this->db : $this;
+    }
+
+    /**
+     * Return the current number of entries in qb_where. Public because it may
+     * be invoked across object boundaries (NestedQueryBuilder calling on its
+     * wrapped $db) where qb_where itself — being protected on CI_DB_query_builder —
+     * would not be directly accessible.
+     *
+     * @return int
+     */
+    public function _qbw_count()
+    {
+        return count($this->qb_where);
+    }
+
+    /**
+     * Allocate and return the next call-order sequence number. Used as a
+     * tie-breaker when two deferred conditions were captured at the same
+     * qb_where position (i.e. called back-to-back with no synchronous
+     * where()/or_where() between them).
+     *
+     * @return int
+     */
+    public function _qbw_next_seq()
+    {
+        return $this->_call_order_seq++;
+    }
+
+    /**
+     * Remove and return the last qb_where entry (the one just appended by
+     * where()/or_where()).
+     *
+     * @return array
+     */
+    public function _qbw_pop()
+    {
+        return array_pop($this->qb_where);
+    }
+
+    /**
+     * Splice a previously-popped qb_where entry back in at the given index.
+     *
+     * @param int $pos
+     * @param array $entry
+     * @return void
+     */
+    public function _qbw_splice($pos, $entry)
+    {
+        array_splice($this->qb_where, $pos, 0, [$entry]);
+    }
+
+    /**
+     * Strip the leading AND/OR connector from whichever entry now sits at
+     * qb_where[0] — CI3 only omits the connector for the entry that is
+     * truly first, and reordering may have moved a different entry there.
+     *
+     * @return void
+     */
+    public function _qbw_strip_leading_glue()
+    {
+        if (!empty($this->qb_where) && isset($this->qb_where[0]['condition'])) {
+            $this->qb_where[0]['condition'] = preg_replace('/^(AND |OR )/', '', $this->qb_where[0]['condition']);
+        }
+    }
+
+    /**
+     * Push one or more qb_where entries into the reorder buffer as a single
+     * block — they will be spliced back in together, in the given order,
+     * preserving their relative order. A single deferred WHERE condition
+     * pushes a 1-element block; a deferred group() pushes every entry the
+     * group produced (open bracket, inner conditions, close bracket) as one
+     * block so the whole group moves as a unit.
+     *
+     * @param int $pos
+     * @param int $seq
+     * @param array $entries
+     * @return void
+     */
+    public function _qbw_buffer_push($pos, $seq, $entries)
+    {
+        $this->_pending_where_reorder_buffer[] = ['pos' => $pos, 'seq' => $seq, 'entries' => $entries];
+    }
+
+    /**
+     * Remove and return all buffered entries, clearing the buffer.
+     *
+     * @return array
+     */
+    public function _qbw_buffer_drain()
+    {
+        $buffer = $this->_pending_where_reorder_buffer;
+        $this->_pending_where_reorder_buffer = [];
+        return $buffer;
+    }
+
+    /**
+     * Return the current buffer length, to be passed back into
+     * _qbw_buffer_flush_from() later as a high-water mark.
+     *
+     * @return int
+     */
+    public function _qbw_buffer_mark()
+    {
+        return count($this->_pending_where_reorder_buffer);
+    }
+
+    /**
+     * Splice back and remove only the buffer entries added SINCE the given
+     * mark, leaving anything buffered before it untouched. Used by
+     * _execute_group_immediately(): conditions registered before a deferred
+     * group started (e.g. a where_has() flushed just ahead of the bracket)
+     * belong to the outer scope and must stay buffered — resolving them here,
+     * before the group's own block gets extracted and repositioned by
+     * process_pending_groups(), would splice them at coordinates that go
+     * stale the moment that repositioning happens. Only entries produced by
+     * the group's own callback (added after the mark) are safe to resolve
+     * immediately, since they must land inside this group's brackets, which
+     * are about to become a single opaque moved block anyway.
+     *
+     * @param int $mark
+     * @return void
+     */
+    public function _qbw_buffer_flush_from($mark)
+    {
+        $count = count($this->_pending_where_reorder_buffer);
+        if ($count <= $mark) return;
+
+        $buffer = array_slice($this->_pending_where_reorder_buffer, $mark);
+        $this->_pending_where_reorder_buffer = array_slice($this->_pending_where_reorder_buffer, 0, $mark);
+
+        usort($buffer, function ($a, $b) {
+            if ($a['pos'] === $b['pos']) return $a['seq'] - $b['seq'];
+            return $a['pos'] - $b['pos'];
+        });
+
+        $offset = 0;
+        foreach ($buffer as $item) {
+            foreach ($item['entries'] as $entry) {
+                $this->_qbw_splice($item['pos'] + $offset, $entry);
+                $offset++;
+            }
+        }
+    }
+
+    /**
+     * Capture the current call-order position for a deferred WHERE condition.
+     * Call this at the moment a pending condition is registered (e.g. inside
+     * where_exists_relation(), where_has(), where_aggregate()) — NOT when it is
+     * actually processed later in get() — so that its recorded position reflects
+     * how many synchronous where()/or_where() calls preceded it in the chain.
+     *
+     * @return array{seq:int,pos:int}
+     */
+    protected function _capture_call_order()
+    {
+        $target = $this->_qbw_target();
+        return ['seq' => $target->_qbw_next_seq(), 'pos' => $target->_qbw_count()];
+    }
+
+    /**
+     * Append a compiled WHERE clause fragment, then immediately move it into the
+     * reorder buffer instead of leaving it at the tail of qb_where. Used by every
+     * deferred-condition processor (where_has, where_exists_relation, where_aggregate)
+     * so that _flush_where_reorder_buffer() can later splice it back to the position
+     * it was originally called at, preserving order relative to plain where()/or_where().
+     *
+     * @param string $clause Compiled SQL fragment (already escaped/validated by caller)
+     * @param bool $is_or Whether this uses OR glue instead of AND
+     * @param array{seq:int,pos:int}|null $order Captured position from _capture_call_order(), or null to skip reordering (append normally at the tail)
+     * @return void
+     */
+    protected function _defer_where_append($clause, $is_or, $order = null)
+    {
+        if ($is_or) {
+            $this->or_where($clause, null, false);
+        } else {
+            $this->where($clause, null, false);
+        }
+
+        if ($order === null) return;
+
+        $target = $this->_qbw_target();
+        $entry = $target->_qbw_pop();
+        $target->_qbw_buffer_push($order['pos'], $order['seq'], [$entry]);
+    }
+
+    /**
+     * Drain the reorder buffer, splicing each entry back into qb_where at its
+     * originally-captured position (adjusted for entries already spliced in
+     * ahead of it), so that the final WHERE clause reflects the order conditions
+     * were actually called in — not the order their subqueries happened to
+     * finish compiling in. Must be called after all pending processing for a
+     * given get()/get_where()/get_compiled_select() call, right before compiling.
+     *
+     * @return void
+     */
+    protected function _flush_where_reorder_buffer()
+    {
+        $target = $this->_qbw_target();
+        $buffer = $target->_qbw_buffer_drain();
+        if (empty($buffer)) return;
+
+        usort($buffer, function ($a, $b) {
+            if ($a['pos'] === $b['pos']) return $a['seq'] - $b['seq'];
+            return $a['pos'] - $b['pos'];
+        });
+
+        $offset = 0;
+        foreach ($buffer as $item) {
+            foreach ($item['entries'] as $entry) {
+                $target->_qbw_splice($item['pos'] + $offset, $entry);
+                $offset++;
+            }
+        }
+
+        $target->_qbw_strip_leading_glue();
+    }
+
+    /**
+     * Return a high-water mark for the reorder buffer, to be passed to
+     * _flush_where_reorder_buffer_from() later.
+     *
+     * @return int
+     */
+    protected function _mark_where_reorder_buffer()
+    {
+        return $this->_qbw_target()->_qbw_buffer_mark();
+    }
+
+    /**
+     * Resolve only the buffer entries added since $mark — see
+     * _qbw_buffer_flush_from() for why this must not touch entries buffered
+     * before a deferred group() started.
+     *
+     * @param int $mark
+     * @return void
+     */
+    protected function _flush_where_reorder_buffer_from($mark)
+    {
+        $this->_qbw_target()->_qbw_buffer_flush_from($mark);
+    }
+
+    /**
      * Add eager loading relation
      *
      * @param string|array $relation Relation name or array with alias
@@ -1776,7 +2046,8 @@ trait RelationAggregateTrait
             'value' => $value,
             'column' => $column,
             'is_custom_expression' => $is_custom_expression,
-            'callback' => $callback
+            'callback' => $callback,
+            '_order' => $this->_capture_call_order()
         ];
 
         return $this;
@@ -1814,7 +2085,8 @@ trait RelationAggregateTrait
             'relation' => $relation,
             'foreign_keys' => $processed_foreign_keys,
             'local_keys' => $processed_local_keys,
-            'callback' => $callback
+            'callback' => $callback,
+            '_order' => $this->_capture_call_order()
         ];
 
         // disable_pending_process, being inside a group() context, or both, all route
@@ -3054,7 +3326,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             'local_key' => $processed_local_keys,
             'callback' => $callback,
             'operator' => $operator,
-            'count' => (int) $count
+            'count' => (int) $count,
+            '_order' => $this->_capture_call_order()
         ];
 
         return $this;
@@ -3124,7 +3397,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             'callback' => $callback,
             'operator' => $operator,
             'count' => $count,
-            'type' => 'OR'
+            'type' => 'OR',
+            '_order' => $this->_capture_call_order()
         ];
 
         return $this;
@@ -3426,7 +3700,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             return $this->_execute_group_immediately('AND', $callback);
         }
 
-        $this->pending_groups[] = ['type' => 'AND', 'callback' => $callback];
+        $this->pending_groups[] = ['type' => 'AND', 'callback' => $callback, '_order' => $this->_capture_call_order()];
         return $this;
     }
 
@@ -3469,7 +3743,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             return $this->_execute_group_immediately('OR', $callback);
         }
 
-        $this->pending_groups[] = ['type' => 'OR', 'callback' => $callback];
+        $this->pending_groups[] = ['type' => 'OR', 'callback' => $callback, '_order' => $this->_capture_call_order()];
         return $this;
     }
 
@@ -3730,6 +4004,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
         }
+        $this->_flush_where_reorder_buffer();
 
         if (!empty($this->with_relations)) return $this->get_with_eager_loading('', $limit, $offset, null);
 
@@ -3771,6 +4046,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
         }
+        $this->_flush_where_reorder_buffer();
 
         // Check if we have eager loading relations
         if (!empty($this->with_relations)) {
@@ -3935,6 +4211,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
         }
+        $this->_flush_where_reorder_buffer();
 
         $original_relations = $this->with_relations;
         $this->with_relations = [];
@@ -3971,6 +4248,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
         }
+        $this->_flush_where_reorder_buffer();
 
         $original_relations = $this->with_relations;
         $this->with_relations = [];
@@ -4282,13 +4560,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 : '>=';
 
             $count = (int) $where_has_config['count'];
-            $condition_type = isset($where_has_config['type']) && $where_has_config['type'] === 'OR' ? 'or_where' : 'where';
+            $is_or = isset($where_has_config['type']) && $where_has_config['type'] === 'OR';
 
-            if ($condition_type === 'or_where') {
-                $this->or_where("({$subquery->get_compiled_select()}) $operator $count", null, false);
-            } else {
-                $this->where("({$subquery->get_compiled_select()}) $operator $count", null, false);
-            }
+            $subquery->_flush_where_reorder_buffer();
+            $clause = "({$subquery->get_compiled_select()}) $operator $count";
+            $this->_defer_where_append($clause, $is_or, isset($where_has_config['_order']) ? $where_has_config['_order'] : null);
         }
 
         // pending_where_has already cleared at the beginning to prevent recursion
@@ -4657,6 +4933,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             // Build the WHERE condition with subquery
+            $subquery->_flush_where_reorder_buffer();
             $compiled_subquery = $subquery->get_compiled_select();
             $operator = $aggregate_config['operator'];
             $value = $aggregate_config['value'];
@@ -4674,11 +4951,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             // Add to WHERE clause based on condition type
-            if ($aggregate_config['condition_type'] === 'OR') {
-                $this->or_where($where_condition, null, false);
-            } else {
-                $this->where($where_condition, null, false);
-            }
+            $this->_defer_where_append($where_condition, $aggregate_config['condition_type'] === 'OR', isset($aggregate_config['_order']) ? $aggregate_config['_order'] : null);
         }
     }
 
@@ -4754,12 +5027,23 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $backup_pending_where_has = $this->pending_where_has;
             $this->pending_where_has = [];
 
-            // process immediately (this will reset pending_where_has again)
+            // Restore the backup into pending and process so the resulting
+            // WHERE condition is added before the group.
+            $this->pending_where_has = $backup_pending_where_has;
             $this->process_pending_where_has();
 
             // ensure nothing remains
             $this->pending_where_has = [];
         }
+
+        // Mark the buffer here, BEFORE the bracket opens. Anything already
+        // buffered above (the pre-group where_has/aggregates flush) belongs
+        // to the outer scope and must stay buffered — resolving it now would
+        // splice into qb_where, corrupting the pure-append assumption
+        // process_pending_groups() relies on to measure how many entries
+        // this group produced. Only entries added AFTER this mark (i.e.
+        // inside the callback below) are safe to resolve before group_end().
+        $group_mark = $this->_mark_where_reorder_buffer();
 
         if ($type === 'OR') {
             $this->or_group_start();
@@ -4803,6 +5087,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             if (!empty($this->pending_where_has)) {
                 $this->process_pending_where_has();
             }
+
+            $this->_flush_where_reorder_buffer_from($group_mark);
         } catch (Exception $e) {
             $this->_in_group_context--;
             $this->group_end();
@@ -4822,7 +5108,28 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->pending_groups = [];
 
         foreach ($groups as $group) {
+            $order = isset($group['_order']) ? $group['_order'] : null;
+            $target = $this->_qbw_target();
+            $before = $order !== null ? $target->_qbw_count() : null;
+
             $this->_execute_group_immediately($group['type'], $group['callback']);
+
+            // The group was deferred because the table wasn't known yet at call time,
+            // meaning it always runs here — appended at the tail, after whatever
+            // synchronous where()/or_where() calls came later in the chain. Move the
+            // whole block of entries it just produced (open bracket, inner conditions,
+            // close bracket) back to its original call-order position, as a unit.
+            if ($order !== null) {
+                $after = $target->_qbw_count();
+                $n = $after - $before;
+                if ($n > 0) {
+                    $entries = [];
+                    for ($i = 0; $i < $n; $i++) {
+                        array_unshift($entries, $target->_qbw_pop());
+                    }
+                    $target->_qbw_buffer_push($order['pos'], $order['seq'], $entries);
+                }
+            }
         }
     }
 
@@ -4922,16 +5229,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         // Get the compiled subquery
+        $subquery->_flush_where_reorder_buffer();
         $compiled_subquery = $subquery->get_compiled_select();
 
         // Add EXISTS/NOT EXISTS condition based on type
         $exists_clause = "{$exists_config['exists_type']} ({$compiled_subquery})";
 
-        if ($exists_config['type'] === 'OR') {
-            $this->or_where($exists_clause, null, false);
-        } else {
-            $this->where($exists_clause, null, false);
-        }
+        $this->_defer_where_append($exists_clause, $exists_config['type'] === 'OR', isset($exists_config['_order']) ? $exists_config['_order'] : null);
     }
 
     /**
@@ -5007,16 +5311,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             // Get the compiled subquery
+            $subquery->_flush_where_reorder_buffer();
             $compiled_subquery = $subquery->get_compiled_select();
 
             // Add EXISTS/NOT EXISTS condition based on type
             $exists_clause = "{$exists_config['exists_type']} ({$compiled_subquery})";
 
-            if ($exists_config['type'] === 'OR') {
-                $this->or_where($exists_clause, null, false);
-            } else {
-                $this->where($exists_clause, null, false);
-            }
+            $this->_defer_where_append($exists_clause, $exists_config['type'] === 'OR', isset($exists_config['_order']) ? $exists_config['_order'] : null);
         }
 
         // Clear pending operations
@@ -6017,6 +6318,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->_in_group_context = 0;
         $this->_calc_rows_enabled = false;
         $this->_temp_table_name = null;
+        // A freshly reset instance (typically a clone used to build a relation/aggregate
+        // subquery) must not inherit the outer query's in-flight reorder bookkeeping —
+        // otherwise a stale buffered entry from an already-processed pending condition
+        // gets spliced into the subquery's own qb_where instead of the outer one's.
+        $this->_pending_where_reorder_buffer = [];
+        $this->_call_order_seq = 0;
         return parent::reset_query();
     }
 
