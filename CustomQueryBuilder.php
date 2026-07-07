@@ -263,6 +263,32 @@ trait QueryValidationTrait
     }
 
     /**
+     * Reject expressions that call a function not on the allowlist.
+     *
+     * Token-level validation alone lets an unrecognized identifier through as
+     * an "assumed column name" (there's no schema to check it against), which
+     * also lets disallowed function calls like SLEEP(5) or BENCHMARK(...)
+     * slip through as if they were column references. This scans for any
+     * `identifier(` call and requires the identifier to be explicitly allowed.
+     *
+     * @param string $expression Expression to scan (quoted string literals should already be stripped)
+     * @param array $extra_allowed Additional function names allowed in this context (uppercase)
+     * @return bool True if every function call in the expression is allowed
+     */
+    protected function has_only_allowed_function_calls($expression, $extra_allowed = [])
+    {
+        if (!preg_match_all('/([A-Za-z_][A-Za-z0-9_]*)\s*\(/', $expression, $matches)) return true;
+
+        foreach ($matches[1] as $name) {
+            if (!in_array(strtoupper($name), self::$ALLOWED_SQL_FUNCTIONS) && !in_array(strtoupper($name), $extra_allowed)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Validate custom SQL expression for aggregation functions
      *
      * @param string $expression Custom SQL expression to validate
@@ -272,6 +298,7 @@ trait QueryValidationTrait
     {
         $extra_patterns = ['/\bSELECT\b/i', '/\bFROM\b/i', '/\bJOIN\b/i'];
         if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/', $extra_patterns)) return false;
+        if (!$this->has_only_allowed_function_calls($expression)) return false;
         // Validate tokens
         $tokens = preg_split('/[\s\(\)\+\-\*\/,<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
         foreach ($tokens as $token) {
@@ -321,6 +348,9 @@ trait QueryValidationTrait
         // Remove quoted strings temporarily for token validation
         $expression_without_strings = preg_replace('/"[^"]*"/', 'STRING_LITERAL', $expression);
         $expression_without_strings = preg_replace("/'[^']*'/", 'STRING_LITERAL', $expression_without_strings);
+
+        $extra_allowed_functions = ['POW', 'SQRT', 'MOD', 'CURDATE', 'CURTIME'];
+        if (!$this->has_only_allowed_function_calls($expression_without_strings, $extra_allowed_functions)) return false;
 
         // Validate tokens (exclude string literals)
         $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression_without_strings, -1, PREG_SPLIT_NO_EMPTY);
@@ -4592,9 +4622,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         if (!empty($this->with_relations)) return $this->get_with_eager_loading('', $limit, $offset, null);
 
-        // parent::get() calls $this->query() internally, which (via our override
-        // below) already wraps the result into CustomQueryBuilderResult — do not
-        // wrap it again here.
+        // parent::get() calls $this->query() internally, which already returns a
+        // CustomQueryBuilderResult — wrapping it again here would double-wrap.
         $result = parent::get('', $limit, $offset);
 
         $error = $this->error();
@@ -4755,8 +4784,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $original_debug = $this->db_debug;
         $this->db_debug = FALSE;
 
-        // parent::get_where() calls $this->query() internally, which (via our
-        // override below) already wraps the result — do not wrap it again here.
+        // parent::get_where() calls $this->query() internally, which already
+        // returns a CustomQueryBuilderResult — wrapping it again here would double-wrap.
         $result = parent::get_where('', null, null, null);
 
         $error = $this->error();
