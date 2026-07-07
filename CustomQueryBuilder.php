@@ -679,6 +679,24 @@ class CustomQueryBuilderResult
     }
 
     /**
+     * Get a single column's value from the first row already fetched
+     *
+     * Example:
+     * $email = $this->db->where('id', 1)->get('users')->value('email');
+     *
+     * @param string $column Column name to retrieve
+     * @return mixed|null Column value, or null if there are no rows
+     */
+    public function value($column)
+    {
+        $row = $this->row();
+        if ($row === null) return null;
+
+        $property = strpos($column, '.') !== false ? substr($column, strrpos($column, '.') + 1) : $column;
+        return isset($row->$property) ? $row->$property : null;
+    }
+
+    /**
      * Convert relations to array format recursively
      * 
      * @param array $data Data to convert
@@ -3267,6 +3285,30 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         $result = $this->limit(1)->get($table);
         return $result->num_rows() > 0 ? $result->row() : null;
+    }
+
+    /**
+     * Get a single column's value from the first matching row
+     *
+     * Example:
+     * $email = $this->db->where('id', 1)->value('email', 'users');
+     * // 'john@example.com', or null if no row matched
+     *
+     * @param string $column Column name to retrieve
+     * @param string $table Table name (optional)
+     * @return mixed|null Column value, or null if no rows matched
+     */
+    public function value($column, $table = '')
+    {
+        if (!$this->is_valid_column_name($column)) {
+            throw new InvalidArgumentException("value: invalid column name '" . htmlspecialchars($column) . "'");
+        }
+
+        $row = $this->select($column)->limit(1)->get($table)->row();
+        if ($row === null) return null;
+
+        $property = strpos($column, '.') !== false ? substr($column, strrpos($column, '.') + 1) : $column;
+        return isset($row->$property) ? $row->$property : null;
     }
 
     /**
