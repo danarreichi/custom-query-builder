@@ -2873,8 +2873,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     $parent_table = $this->qb_from[0];
                 }
 
-                // Process queue if we have pending operations and not in group context
-                if (!empty($this->pending_where_queue)) {
+                // Only flush if the parent table is already known (from() was called,
+                // or get('table') already ran earlier in the chain). Otherwise leave
+                // it pending — resolving it now with an empty parent table produces an
+                // unqualified/ambiguous local key (e.g. "scores.user_id = id" instead
+                // of "scores.user_id = users.id"). get()/get_compiled_select() will
+                // flush it correctly once the table is known.
+                if (!empty($this->pending_where_queue) && !empty($parent_table)) {
                     $this->process_pending_where_queue($parent_table);
                 }
             }
@@ -2889,7 +2894,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $parent_table = $this->qb_from[0];
                     }
 
-                    if (!empty($this->pending_where_queue)) {
+                    if (!empty($this->pending_where_queue) && !empty($parent_table)) {
                         $this->process_pending_where_queue($parent_table);
                     }
                 }
@@ -5051,6 +5056,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->group_start();
         }
 
+        // Index of the bracket-open entry we just appended. If the callback
+        // (e.g. a when()/unless() whose condition turned out false, with no
+        // matching default) ends up adding nothing, qb_where's length will
+        // still equal $bracket_open_pos + 1 afterwards — used below to detect
+        // and unwind an empty group instead of emitting "( )", which MySQL
+        // rejects with a syntax error.
+        $bracket_open_pos = count($this->qb_where) - 1;
+
         try {
             $callback($this);
 
@@ -5096,6 +5109,22 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         $this->_in_group_context--;
+
+        // Nothing was added inside the brackets — remove the bracket-open
+        // entry and skip group_end() entirely, rather than emitting "( )".
+        if (count($this->qb_where) - 1 === $bracket_open_pos) {
+            array_pop($this->qb_where);
+
+            // group_start() set this flag expecting the first condition inside
+            // the group to consume it (stripping its own AND/OR prefix). Since
+            // no condition ever ran, the flag is left dangling — without this
+            // reset, the NEXT where()/or_where() call anywhere after this
+            // group would wrongly lose its connector too.
+            $this->qb_where_group_started = false;
+
+            return $this;
+        }
+
         $this->group_end();
         return $this;
     }
