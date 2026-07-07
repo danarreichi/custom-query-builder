@@ -852,8 +852,22 @@ class CustomQueryBuilderResult
 trait RelationAggregateTrait
 {
     /**
+     * @var array Pending WHERE conditions queued while inside a group() callback
+     * (used by add_where_exists_relation_internal so grouping stays correct).
+     * Only meaningful for CustomQueryBuilder — NestedQueryBuilder always uses
+     * the pending_where_exists path since it has no group-context concept.
+     */
+    protected $pending_where_queue = [];
+
+    /**
+     * @var int Depth counter for nested group()/or_group() callbacks.
+     * Only meaningful for CustomQueryBuilder; stays 0 for NestedQueryBuilder.
+     */
+    protected $_in_group_context = 0;
+
+    /**
      * Add eager loading relation
-     * 
+     *
      * @param string|array $relation Relation name or array with alias
      * @param string|array $foreignKey Foreign key(s)
      * @param string|array $localKey Local key(s)
@@ -1769,6 +1783,162 @@ trait RelationAggregateTrait
 
         return $this;
     }
+
+    /**
+     * Internal helper for WHERE EXISTS/NOT EXISTS relation conditions
+     *
+     * @param string $condition_type 'AND' or 'OR'
+     * @param string $exists_type 'EXISTS' or 'NOT EXISTS'
+     * @param string $relation Target table name
+     * @param string|array $foreignKey Foreign key(s)
+     * @param string|array $localKey Local key(s)
+     * @param callable|null $callback Optional callback
+     * @param bool $disable_pending_process If true, execute immediately for OR conditions
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    protected function add_where_exists_relation_internal($condition_type, $exists_type, $relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
+    {
+        $table_name = $this->extract_table_name($relation);
+
+        if (!$this->is_valid_table_name($table_name)) {
+            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
+        }
+
+        $processed_local_keys = $this->process_keys($localKey, 'local key column name', false);
+        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key column name', false);
+        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys, 'Foreign keys and local keys count must match');
+
+        // Create pending operation data
+        $pending_item = [
+            'type' => $condition_type,
+            'exists_type' => $exists_type,
+            'relation' => $relation,
+            'foreign_keys' => $processed_foreign_keys,
+            'local_keys' => $processed_local_keys,
+            'callback' => $callback
+        ];
+
+        // disable_pending_process, being inside a group() context, or both, all route
+        // through pending_where_queue: it preserves this condition's call-order position
+        // relative to other where()/or_where() calls while still resolving the parent
+        // table lazily at get()-time (via process_pending_where_queue()) — so it works
+        // whether the table was set with from() up front or passed to get('table') later.
+        // Without either flag, the condition is batched into pending_where_exists instead.
+        if ($disable_pending_process || $this->_in_group_context > 0) {
+            $this->pending_where_queue[] = [
+                'type' => 'where_exists',
+                'data' => $pending_item
+            ];
+        } else {
+            $this->pending_where_exists[] = $pending_item;
+        }
+
+        return $this;
+    }
+
+    /**
+     * Add WHERE EXISTS condition with relation support (simplified version)
+     * 
+     * This method provides a simplified interface for WHERE EXISTS queries
+     * by automatically building the JOIN conditions based on foreign/local keys,
+     * similar to how where_has() works.
+     * 
+     * Example:
+     * // Users that have orders
+     * $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id');
+     * 
+     * // Users that have active orders  
+     * $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id', function($query) {
+     *     $query->where('status', 'active');
+     * });
+     * 
+     * // Multiple foreign keys
+     * $this->db->from('users')->where_exists_relation('user_roles', ['user_id', 'tenant_id'], ['id', 'tenant_id']);
+     * 
+     * // Marketing SPK with transactions and delivery
+     * $this->db->from('outlet')->where_exists_relation('marketing_spk', 'idspk_workshop', 'idoutlet', function($query) {
+     *     $query->join('transaction t', 't.idmarketing_spk = marketing_spk.idmarketing_spk AND t.idoutlet = marketing_spk.idspk_workshop AND t.status = 1', 'inner')
+     *           ->join('transaction_delivery td', 'td.idtransaction = t.idtransaction', 'inner')
+     *           ->where('marketing_spk.status', 1);
+     * });
+     * 
+     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
+     * @param string|array $foreignKey Foreign key(s) in the target table
+     * @param string|array $localKey Local key(s) in the parent table  
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function where_exists_relation($relation, $foreignKey, $localKey, $callback = null)
+    {
+        return $this->add_where_exists_relation_internal('AND', 'EXISTS', $relation, $foreignKey, $localKey, $callback);
+    }
+
+    /**
+     * Add OR WHERE EXISTS condition with relation support (simplified version)
+     * 
+     * Example:
+     * // Users that have orders OR users that have posts
+     * $this->db->from('users')
+     *          ->where_exists_relation('orders', 'user_id', 'id')
+     *          ->or_where_exists_relation('posts', 'user_id', 'id');
+     * 
+     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
+     * @param string|array $foreignKey Foreign key(s) in the target table
+     * @param string|array $localKey Local key(s) in the parent table  
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
+     * @param bool $disable_pending_process If true, execute immediately instead of queueing
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function or_where_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
+    {
+        return $this->add_where_exists_relation_internal('OR', 'EXISTS', $relation, $foreignKey, $localKey, $callback, $disable_pending_process);
+    }
+
+    /**
+     * Add WHERE NOT EXISTS condition with relation support (simplified version)
+     * 
+     * Example:
+     * // Users that don't have any orders
+     * $this->db->from('users')->where_not_exists_relation('orders', 'user_id', 'id');
+     * 
+     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
+     * @param string|array $foreignKey Foreign key(s) in the target table
+     * @param string|array $localKey Local key(s) in the parent table  
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null)
+    {
+        return $this->add_where_exists_relation_internal('AND', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
+    }
+
+    /**
+     * Add OR WHERE NOT EXISTS condition with relation support (simplified version)
+     * 
+     * Example:
+     * // Users that have orders OR users that don't have cancelled orders
+     * $this->db->from('users')
+     *          ->where_exists_relation('orders', 'user_id', 'id')
+     *          ->or_where_not_exists_relation('orders', 'user_id', 'id', function($query) {
+     *              $query->where('status', 'cancelled');
+     *          });
+     * 
+     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
+     * @param string|array $foreignKey Foreign key(s) in the target table
+     * @param string|array $localKey Local key(s) in the parent table  
+     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
+     * @param bool $disable_pending_process If true, execute immediately instead of queueing
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
+    {
+        return $this->add_where_exists_relation_internal('OR', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback, $disable_pending_process);
+    }
 }
 
 
@@ -2008,135 +2178,6 @@ class NestedQueryBuilder
         return $this;
     }
 
-    /**
-     * Internal helper for WHERE EXISTS/NOT EXISTS relation conditions
-     *
-     * @param string $condition_type 'AND' or 'OR'
-     * @param string $exists_type 'EXISTS' or 'NOT EXISTS'
-     * @param string $relation Target table name
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param callable|null $callback Optional callback
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    protected function add_where_exists_relation_internal($condition_type, $exists_type, $relation, $foreignKey, $localKey, $callback = null)
-    {
-        $table_name = $this->extract_table_name($relation);
-
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        $processed_local_keys = $this->process_keys($localKey, 'local key column name', false);
-        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key column name', false);
-        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys, 'Foreign keys and local keys count must match');
-
-        $this->pending_where_exists[] = [
-            'type' => $condition_type,
-            'exists_type' => $exists_type,
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        return $this;
-    }
-
-    /**
-     * Add WHERE EXISTS condition with relation support (simplified version)
-     * 
-     * This method provides a simplified interface for WHERE EXISTS queries
-     * by automatically building the JOIN conditions based on foreign/local keys,
-     * similar to how where_has() works.
-     * 
-     * Example:
-     * // Users that have orders
-     * $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id');
-     * 
-     * // Users that have active orders  
-     * $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id', function($query) {
-     *     $query->where('status', 'active');
-     * });
-     * 
-     * // Multiple foreign keys
-     * $this->db->from('users')->where_exists_relation('user_roles', ['user_id', 'tenant_id'], ['id', 'tenant_id']);
-     * 
-     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
-     * @param string|array $foreignKey Foreign key(s) in the target table
-     * @param string|array $localKey Local key(s) in the parent table  
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for additional conditions
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function where_exists_relation($relation, $foreignKey, $localKey, $callback = null)
-    {
-        return $this->add_where_exists_relation_internal('AND', 'EXISTS', $relation, $foreignKey, $localKey, $callback);
-    }
-
-    /**
-     * Add OR WHERE EXISTS condition with relation support (simplified version)
-     * 
-     * Example:
-     * // Users that have orders OR users that have posts
-     * $this->db->from('users')
-     *          ->where_exists_relation('orders', 'user_id', 'id')
-     *          ->or_where_exists_relation('posts', 'user_id', 'id');
-     * 
-     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
-     * @param string|array $foreignKey Foreign key(s) in the target table
-     * @param string|array $localKey Local key(s) in the parent table  
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for additional conditions
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function or_where_exists_relation($relation, $foreignKey, $localKey, $callback = null)
-    {
-        return $this->add_where_exists_relation_internal('OR', 'EXISTS', $relation, $foreignKey, $localKey, $callback);
-    }
-
-    /**
-     * Add WHERE NOT EXISTS condition with relation support (simplified version)
-     * 
-     * Example:
-     * // Users that don't have any orders
-     * $this->db->from('users')->where_not_exists_relation('orders', 'user_id', 'id');
-     * 
-     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
-     * @param string|array $foreignKey Foreign key(s) in the target table
-     * @param string|array $localKey Local key(s) in the parent table  
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for additional conditions
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null)
-    {
-        return $this->add_where_exists_relation_internal('AND', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
-    }
-
-    /**
-     * Add OR WHERE NOT EXISTS condition with relation support (simplified version)
-     * 
-     * Example:
-     * // Users that have orders OR users that don't have cancelled orders
-     * $this->db->from('users')
-     *          ->where_exists_relation('orders', 'user_id', 'id')
-     *          ->or_where_not_exists_relation('orders', 'user_id', 'id', function($query) {
-     *              $query->where('status', 'cancelled');
-     *          });
-     * 
-     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
-     * @param string|array $foreignKey Foreign key(s) in the target table
-     * @param string|array $localKey Local key(s) in the parent table  
-     * @param callable(NestedQueryBuilder): void|null $callback Optional callback for additional conditions
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null)
-    {
-        return $this->add_where_exists_relation_internal('OR', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
-    }
 
 }
 
@@ -2191,19 +2232,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
     protected $pending_where_aggregates = [];
 
     /**
-     * @var array Queue of pending WHERE operations in order (for proper grouping)
-     */
-    protected $pending_where_queue = [];
-
-    /**
      * @var array Queue of pending group() / or_group() callbacks (deferred until get())
      */
     protected $pending_groups = [];
-
-    /**
-     * @var int Counter to track if we're inside a group() callback context
-     */
-    protected $_in_group_context = 0;
 
     /**
      * @var bool Debug mode flag
@@ -2953,181 +2984,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
         return $this->add_where_exists_callback('OR', 'NOT EXISTS', $callback);
     }
 
-    /**
-     * Internal helper for WHERE EXISTS/NOT EXISTS relation conditions
-     *
-     * @param string $condition_type 'AND' or 'OR'
-     * @param string $exists_type 'EXISTS' or 'NOT EXISTS'
-     * @param string $relation Target table name
-     * @param string|array $foreignKey Foreign key(s)
-     * @param string|array $localKey Local key(s)
-     * @param callable|null $callback Optional callback
-     * @param bool $disable_pending_process If true, execute immediately for OR conditions
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    protected function add_where_exists_relation_internal($condition_type, $exists_type, $relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
-    {
-        $table_name = $this->extract_table_name($relation);
-
-        if (!$this->is_valid_table_name($table_name)) {
-            throw new InvalidArgumentException("Invalid relation table name: {$table_name}");
-        }
-
-        $processed_local_keys = $this->process_keys($localKey, 'local key column name', false);
-        $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key column name', false);
-        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys, 'Foreign keys and local keys count must match');
-
-        // Handle immediate execution for OR conditions when disable_pending_process is true
-        if ($disable_pending_process && $condition_type === 'OR') {
-            $extract_table_or_alias = function ($table_string) {
-                return $this->extract_table_or_alias($table_string);
-            };
-
-            $exists_method = $exists_type === 'EXISTS' ? 'or_where_exists' : 'or_where_not_exists';
-
-            return $this->$exists_method(function ($sub) use ($relation, $processed_foreign_keys, $processed_local_keys, $callback, $extract_table_or_alias) {
-                $sub->select('1')
-                    ->from($relation);
-
-                for ($i = 0; $i < count($processed_foreign_keys); $i++) {
-                    $fk = $processed_foreign_keys[$i];
-                    $lk = $processed_local_keys[$i];
-                    $relation_alias = $extract_table_or_alias($relation);
-                    $parent_ref = $lk;
-                    $sub->where("{$relation_alias}.{$fk} = {$parent_ref}", null, false);
-                }
-
-                if ($callback && is_callable($callback)) $callback($sub);
-            });
-        }
-
-        // Create pending operation data
-        $pending_item = [
-            'type' => $condition_type,
-            'exists_type' => $exists_type,
-            'relation' => $relation,
-            'foreign_keys' => $processed_foreign_keys,
-            'local_keys' => $processed_local_keys,
-            'callback' => $callback
-        ];
-
-        // If we're inside a group context, add to queue for proper grouping
-        // Otherwise, add to pending_where_exists to be processed before group
-        if ($this->_in_group_context > 0) {
-            $this->pending_where_queue[] = [
-                'type' => 'where_exists',
-                'data' => $pending_item
-            ];
-        } else {
-            $this->pending_where_exists[] = $pending_item;
-        }
-
-        return $this;
-    }
-
-    /**
-     * Add WHERE EXISTS condition with relation support (simplified version)
-     * 
-     * This method provides a simplified interface for WHERE EXISTS queries
-     * by automatically building the JOIN conditions based on foreign/local keys,
-     * similar to how where_has() works.
-     * 
-     * Example:
-     * // Users that have orders
-     * $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id');
-     * 
-     * // Users that have active orders  
-     * $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id', function($query) {
-     *     $query->where('status', 'active');
-     * });
-     * 
-     * // Multiple foreign keys
-     * $this->db->from('users')->where_exists_relation('user_roles', ['user_id', 'tenant_id'], ['id', 'tenant_id']);
-     * 
-     * // Marketing SPK with transactions and delivery
-     * $this->db->from('outlet')->where_exists_relation('marketing_spk', 'idspk_workshop', 'idoutlet', function($query) {
-     *     $query->join('transaction t', 't.idmarketing_spk = marketing_spk.idmarketing_spk AND t.idoutlet = marketing_spk.idspk_workshop AND t.status = 1', 'inner')
-     *           ->join('transaction_delivery td', 'td.idtransaction = t.idtransaction', 'inner')
-     *           ->where('marketing_spk.status', 1);
-     * });
-     * 
-     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
-     * @param string|array $foreignKey Foreign key(s) in the target table
-     * @param string|array $localKey Local key(s) in the parent table  
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function where_exists_relation($relation, $foreignKey, $localKey, $callback = null)
-    {
-        return $this->add_where_exists_relation_internal('AND', 'EXISTS', $relation, $foreignKey, $localKey, $callback);
-    }
-
-    /**
-     * Add OR WHERE EXISTS condition with relation support (simplified version)
-     * 
-     * Example:
-     * // Users that have orders OR users that have posts
-     * $this->db->from('users')
-     *          ->where_exists_relation('orders', 'user_id', 'id')
-     *          ->or_where_exists_relation('posts', 'user_id', 'id');
-     * 
-     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
-     * @param string|array $foreignKey Foreign key(s) in the target table
-     * @param string|array $localKey Local key(s) in the parent table  
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
-     * @param bool $disable_pending_process If true, execute immediately instead of queueing
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function or_where_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
-    {
-        return $this->add_where_exists_relation_internal('OR', 'EXISTS', $relation, $foreignKey, $localKey, $callback, $disable_pending_process);
-    }
-
-    /**
-     * Add WHERE NOT EXISTS condition with relation support (simplified version)
-     * 
-     * Example:
-     * // Users that don't have any orders
-     * $this->db->from('users')->where_not_exists_relation('orders', 'user_id', 'id');
-     * 
-     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
-     * @param string|array $foreignKey Foreign key(s) in the target table
-     * @param string|array $localKey Local key(s) in the parent table  
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null)
-    {
-        return $this->add_where_exists_relation_internal('AND', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback);
-    }
-
-    /**
-     * Add OR WHERE NOT EXISTS condition with relation support (simplified version)
-     * 
-     * Example:
-     * // Users that have orders OR users that don't have cancelled orders
-     * $this->db->from('users')
-     *          ->where_exists_relation('orders', 'user_id', 'id')
-     *          ->or_where_not_exists_relation('orders', 'user_id', 'id', function($query) {
-     *              $query->where('status', 'cancelled');
-     *          });
-     * 
-     * @param string $relation Target table name (may include optional alias: "table_name alias" or "table_name AS alias")
-     * @param string|array $foreignKey Foreign key(s) in the target table
-     * @param string|array $localKey Local key(s) in the parent table  
-     * @param callable(CustomQueryBuilder): void|null $callback Optional callback for additional conditions
-     * @param bool $disable_pending_process If true, execute immediately instead of queueing
-     * @return $this
-     * @throws InvalidArgumentException
-     */
-    public function or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)
-    {
-        return $this->add_where_exists_relation_internal('OR', 'NOT EXISTS', $relation, $foreignKey, $localKey, $callback, $disable_pending_process);
-    }
 
     /**
      * Add WHERE HAS condition for relationships
