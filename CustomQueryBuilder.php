@@ -2359,7 +2359,17 @@ class NestedQueryBuilder
             throw new InvalidArgumentException('Callback must be callable');
         }
 
-        $subquery = new NestedQueryBuilder($this->db);
+        // Clone $this->db before wrapping it — without this, building the subquery
+        // (select()/from()/where() calls proxied via __call()) mutates the SAME
+        // db instance the caller is still using, and get_compiled_select()'s default
+        // $reset=true then wipes it out entirely (qb_from included), producing
+        // "Error 1096: No tables used" on whatever query the caller builds next.
+        // reset_query() afterwards clears whatever qb_from/qb_where the clone
+        // inherited from the caller's in-progress query, so the subquery starts
+        // clean instead of e.g. carrying over the caller's own FROM/WHERE.
+        $subquery_db = clone $this->db;
+        $subquery_db->reset_query();
+        $subquery = new NestedQueryBuilder($subquery_db);
 
         // Execute callback to build subquery
         $callback($subquery);
@@ -2404,7 +2414,17 @@ class NestedQueryBuilder
             throw new InvalidArgumentException('Callback must be callable');
         }
 
-        $subquery = new NestedQueryBuilder($this->db);
+        // Clone $this->db before wrapping it — without this, building the subquery
+        // (select()/from()/where() calls proxied via __call()) mutates the SAME
+        // db instance the caller is still using, and get_compiled_select()'s default
+        // $reset=true then wipes it out entirely (qb_from included), producing
+        // "Error 1096: No tables used" on whatever query the caller builds next.
+        // reset_query() afterwards clears whatever qb_from/qb_where the clone
+        // inherited from the caller's in-progress query, so the subquery starts
+        // clean instead of e.g. carrying over the caller's own FROM/WHERE.
+        $subquery_db = clone $this->db;
+        $subquery_db->reset_query();
+        $subquery = new NestedQueryBuilder($subquery_db);
 
         // Execute callback to build subquery
         $callback($subquery);
@@ -2443,7 +2463,17 @@ class NestedQueryBuilder
             throw new InvalidArgumentException('Callback must be callable');
         }
 
-        $subquery = new NestedQueryBuilder($this->db);
+        // Clone $this->db before wrapping it — without this, building the subquery
+        // (select()/from()/where() calls proxied via __call()) mutates the SAME
+        // db instance the caller is still using, and get_compiled_select()'s default
+        // $reset=true then wipes it out entirely (qb_from included), producing
+        // "Error 1096: No tables used" on whatever query the caller builds next.
+        // reset_query() afterwards clears whatever qb_from/qb_where the clone
+        // inherited from the caller's in-progress query, so the subquery starts
+        // clean instead of e.g. carrying over the caller's own FROM/WHERE.
+        $subquery_db = clone $this->db;
+        $subquery_db->reset_query();
+        $subquery = new NestedQueryBuilder($subquery_db);
 
         // Execute callback to build subquery
         $callback($subquery);
@@ -2484,7 +2514,17 @@ class NestedQueryBuilder
             throw new InvalidArgumentException('Callback must be callable');
         }
 
-        $subquery = new NestedQueryBuilder($this->db);
+        // Clone $this->db before wrapping it — without this, building the subquery
+        // (select()/from()/where() calls proxied via __call()) mutates the SAME
+        // db instance the caller is still using, and get_compiled_select()'s default
+        // $reset=true then wipes it out entirely (qb_from included), producing
+        // "Error 1096: No tables used" on whatever query the caller builds next.
+        // reset_query() afterwards clears whatever qb_from/qb_where the clone
+        // inherited from the caller's in-progress query, so the subquery starts
+        // clean instead of e.g. carrying over the caller's own FROM/WHERE.
+        $subquery_db = clone $this->db;
+        $subquery_db->reset_query();
+        $subquery = new NestedQueryBuilder($subquery_db);
 
         // Execute callback to build subquery
         $callback($subquery);
