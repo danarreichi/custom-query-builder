@@ -1,7 +1,7 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
-require BASEPATH . 'database/DB_query_builder.php';
+require_once BASEPATH . 'database/DB_query_builder.php';
 /**
  * Query Validation Trait
  *
@@ -501,16 +501,74 @@ class CustomQueryBuilderResult
     private $_found_rows;
 
     /**
+     * @var object|null Original driver result object (CI_DB_result), kept only
+     * so uncommon methods (num_fields(), free_result(), etc.) still work when
+     * this wrapper is used in place of the native result.
+     */
+    private $_original_result;
+
+    /**
      * Constructor
-     * 
+     *
      * @param array $data Result data
      * @param int|null $found_rows Total found rows from SQL_CALC_FOUND_ROWS
+     * @param object|null $original_result Original driver result object to proxy uncommon calls to
      */
-    public function __construct($data, $found_rows = null)
+    public function __construct($data, $found_rows = null, $original_result = null)
     {
         $this->_data = is_array($data) ? $data : [];
         $this->_num_rows = count($this->_data);
         $this->_found_rows = $found_rows;
+        $this->_original_result = $original_result;
+    }
+
+    /**
+     * Proxy uncommon driver result methods (num_fields(), free_result(), etc.)
+     * to the original result object, if available.
+     *
+     * @param string $name Method name
+     * @param array $arguments Method arguments
+     * @return mixed
+     */
+    public function __call($name, $arguments)
+    {
+        if ($this->_original_result !== null && method_exists($this->_original_result, $name)) {
+            return call_user_func_array([$this->_original_result, $name], $arguments);
+        }
+
+        throw new BadMethodCallException('Call to undefined method ' . get_class($this) . '::' . $name . '()');
+    }
+
+    /**
+     * Key the result set by a column value, similar to Laravel's Collection::keyBy().
+     *
+     * Example:
+     * $usersById = $this->db->get('users')->key_by('id');
+     * // [1 => {...}, 2 => {...}, ...]
+     *
+     * If a key value repeats, the last matching row wins (same as Laravel).
+     *
+     * @param string|callable $key Column name, or callback($row) returning the key
+     * @param bool $as_array Return array rows instead of objects (default: false)
+     * @return array Result data indexed by the given key
+     */
+    public function key_by($key, $as_array = false)
+    {
+        $rows = $as_array ? $this->result_array() : $this->result();
+
+        $keyed = [];
+        foreach ($rows as $row) {
+            if (is_callable($key)) {
+                $key_value = $key($row);
+            } elseif (is_object($row)) {
+                $key_value = isset($row->$key) ? $row->$key : null;
+            } else {
+                $key_value = isset($row[$key]) ? $row[$key] : null;
+            }
+            $keyed[$key_value] = $row;
+        }
+
+        return $keyed;
     }
 
     /**
@@ -4500,7 +4558,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @param string $table Table name (optional)
      * @param int|null $limit Limit number of results
      * @param int|null $offset Offset for results
-     * @return CI_DB_result|CustomQueryBuilderResult Query result
+     * @return CustomQueryBuilderResult Query result
      */
     public function get($table = '', $limit = null, $offset = null)
     {
@@ -4534,6 +4592,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         if (!empty($this->with_relations)) return $this->get_with_eager_loading('', $limit, $offset, null);
 
+        // parent::get() calls $this->query() internally, which (via our override
+        // below) already wraps the result into CustomQueryBuilderResult — do not
+        // wrap it again here.
         $result = parent::get('', $limit, $offset);
 
         $error = $this->error();
@@ -4672,7 +4733,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @param array|null $where WHERE conditions
      * @param int|null $limit Limit number of results
      * @param int|null $offset Offset for results
-     * @return CI_DB_result|CustomQueryBuilderResult Query result
+     * @return CustomQueryBuilderResult Query result
      */
     public function get_where($table = '', $where = null, $limit = null, $offset = null)
     {
@@ -4694,6 +4755,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $original_debug = $this->db_debug;
         $this->db_debug = FALSE;
 
+        // parent::get_where() calls $this->query() internally, which (via our
+        // override below) already wraps the result — do not wrap it again here.
         $result = parent::get_where('', null, null, null);
 
         $error = $this->error();
@@ -6849,7 +6912,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * @param string $sql SQL query string
      * @param mixed $binds Query bindings (optional)
      * @param bool $return_object Whether to return as object (default: true for backwards compatibility)
-     * @return CI_DB_result|CustomQueryBuilderResult Standard result or wrapped result with relations
+     * @return bool|CustomQueryBuilderResult CustomQueryBuilderResult for SELECT queries, bool for write queries
      */
     public function query($sql, $binds = FALSE, $return_object = NULL)
     {
@@ -6859,8 +6922,17 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Check if we need to process relations
         $has_relations = !empty($this->with_relations);
 
-        // If no relations or query failed, return standard result
-        if ((!$has_relations) || !$query) return $query;
+        if (!$has_relations) {
+            // Wrap SELECT results so ->key_by() etc. are available. Write queries
+            // (INSERT/UPDATE/DELETE) return bool from parent::query() — pass through as-is.
+            if (is_object($query) && method_exists($query, 'result_array')) {
+                return new CustomQueryBuilderResult($query->result_array(), null, $query);
+            }
+            return $query;
+        }
+
+        // If query failed, return standard result
+        if (!$query) return $query;
 
         // Store relations
         $relations = $this->with_relations;
