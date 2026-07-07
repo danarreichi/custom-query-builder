@@ -884,13 +884,11 @@ trait RelationAggregateTrait
         if (!is_bool($multiple)) throw new InvalidArgumentException('Parameter $multiple must be a boolean value (true or false).');
 
         if (is_array($relation)) {
-            if (count($relation) === 1) {
-                $relation_name = key($relation);
-                $alias = current($relation);
-            } else {
-                $relation_name = reset($relation);
-                $alias = $relation_name;
+            if (count($relation) !== 1) {
+                throw new InvalidArgumentException('Parameter $relation array must contain exactly one element in the form ["relation_name" => "alias"].');
             }
+            $relation_name = key($relation);
+            $alias = current($relation);
         } else {
             $relation_name = $relation;
             $alias = $relation;
