@@ -58,22 +58,26 @@ Edit `system/database/DB.php` to load and extend CustomQueryBuilder instead of t
 
 **File to edit:** `system/database/DB.php`
 
-**Find this code** (around line 154-163):
+**Find this code** (around line 154-185):
 
 ```php
 require_once(BASEPATH.'database/DB_driver.php');
 
-if ( ! class_exists('CI_DB', FALSE))
+if ( ! isset($query_builder) OR $query_builder === TRUE)
 {
-    /**
-     * CI_DB
-     *
-     * Acts as an alias for both CI_DB_driver and CI_DB_query_builder.
-     *
-     * @see	CI_DB_query_builder
-     * @see	CI_DB_driver
-     */
-    class CI_DB extends CI_DB_query_builder {}
+    require_once(BASEPATH.'database/DB_query_builder.php');
+    if ( ! class_exists('CI_DB', FALSE))
+    {
+        /**
+         * CI_DB
+         *
+         * Acts as an alias for both CI_DB_driver and CI_DB_query_builder.
+         *
+         * @see	CI_DB_query_builder
+         * @see	CI_DB_driver
+         */
+        class CI_DB extends CI_DB_query_builder { }
+    }
 }
 ```
 
@@ -81,25 +85,31 @@ if ( ! class_exists('CI_DB', FALSE))
 
 ```php
 require_once(BASEPATH.'database/DB_driver.php');
-require_once(BASEPATH.'core/CustomQueryBuilder.php');
 
-if ( ! class_exists('CI_DB', FALSE))
+if ( ! isset($query_builder) OR $query_builder === TRUE)
 {
-    /**
-     * CI_DB
-     *
-     * Acts as an alias for both CI_DB_driver and CI_DB_query_builder.
-     *
-     * @see	CI_DB_query_builder
-     * @see	CI_DB_driver
-     */
-    class CI_DB extends CustomQueryBuilder {}
+    require_once(BASEPATH.'database/DB_query_builder.php');
+    require_once(BASEPATH.'core/CustomQueryBuilder.php');
+    if ( ! class_exists('CI_DB', FALSE))
+    {
+        /**
+         * CI_DB
+         *
+         * Acts as an alias for both CI_DB_driver and CI_DB_query_builder.
+         *
+         * @see	CI_DB_query_builder
+         * @see	CI_DB_driver
+         */
+        class CI_DB extends CustomQueryBuilder { }
+    }
 }
 ```
 
 **Key changes:**
-1. Added: `require_once(BASEPATH.'core/CustomQueryBuilder.php');`
-2. Changed: `class CI_DB extends CI_DB_query_builder {}` → `class CI_DB extends CustomQueryBuilder {}`
+1. Added: `require_once(BASEPATH.'core/CustomQueryBuilder.php');` (right after `DB_query_builder.php` is loaded, since `CustomQueryBuilder` extends it)
+2. Changed: `class CI_DB extends CI_DB_query_builder { }` → `class CI_DB extends CustomQueryBuilder { }`
+
+> **Note:** `CustomQueryBuilder.php` already does `require_once(BASEPATH.'database/DB_query_builder.php')` internally, so it's safe even if you place the `require_once` for it earlier (e.g. right after `DB_driver.php`) — `require_once` won't load the parent class twice either way.
 
 #### Step 3: Clear Cache (if applicable)
 
