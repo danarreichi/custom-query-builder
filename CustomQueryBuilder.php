@@ -156,24 +156,29 @@ trait QueryValidationTrait
      */
     protected function validate_identifier_internal($name, $regex_pattern, $check_extended = false)
     {
-        if (!is_string($name) || empty($name)) return false;
+        if (!is_string($name) || empty($name))
+            return false;
 
-        if (!preg_match($regex_pattern, $name)) return false;
+        if (!preg_match($regex_pattern, $name))
+            return false;
 
         // Check against common SQL injection patterns
         foreach (self::$DANGEROUS_SQL_PATTERNS as $pattern) {
-            if (preg_match($pattern, $name)) return false;
+            if (preg_match($pattern, $name))
+                return false;
         }
 
         // Check extended patterns if needed
         if ($check_extended) {
             foreach (self::$EXTENDED_DANGEROUS_PATTERNS as $pattern) {
-                if (preg_match($pattern, $name)) return false;
+                if (preg_match($pattern, $name))
+                    return false;
             }
         }
 
         // Check length to prevent buffer overflow attacks
-        if (strlen($name) > 64) return false;
+        if (strlen($name) > 64)
+            return false;
 
         return true;
     }
@@ -236,18 +241,24 @@ trait QueryValidationTrait
      */
     protected function validate_expression_base($expression, $allowed_char_pattern, $extra_dangerous_patterns = [])
     {
-        if (!is_string($expression) || empty($expression)) return false;
-        if (!preg_match($allowed_char_pattern, $expression)) return false;
+        if (!is_string($expression) || empty($expression))
+            return false;
+        if (!preg_match($allowed_char_pattern, $expression))
+            return false;
         // Check expression-specific dangerous patterns
         foreach (self::$EXPRESSION_DANGEROUS_PATTERNS as $pattern) {
-            if (preg_match($pattern, $expression)) return false;
+            if (preg_match($pattern, $expression))
+                return false;
         }
         // Check extra dangerous patterns
         foreach ($extra_dangerous_patterns as $pattern) {
-            if (preg_match($pattern, $expression)) return false;
+            if (preg_match($pattern, $expression))
+                return false;
         }
-        if (!$this->are_parentheses_balanced($expression)) return false;
-        if (strlen($expression) > 2000) return false;
+        if (!$this->are_parentheses_balanced($expression))
+            return false;
+        if (strlen($expression) > 2000)
+            return false;
         return true;
     }
 
@@ -277,7 +288,8 @@ trait QueryValidationTrait
      */
     protected function has_only_allowed_function_calls($expression, $extra_allowed = [])
     {
-        if (!preg_match_all('/([A-Za-z_][A-Za-z0-9_]*)\s*\(/', $expression, $matches)) return true;
+        if (!preg_match_all('/([A-Za-z_][A-Za-z0-9_]*)\s*\(/', $expression, $matches))
+            return true;
 
         foreach ($matches[1] as $name) {
             if (!in_array(strtoupper($name), self::$ALLOWED_SQL_FUNCTIONS) && !in_array(strtoupper($name), $extra_allowed)) {
@@ -297,14 +309,18 @@ trait QueryValidationTrait
     protected function is_valid_custom_expression($expression)
     {
         $extra_patterns = ['/\bSELECT\b/i', '/\bFROM\b/i', '/\bJOIN\b/i'];
-        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/', $extra_patterns)) return false;
-        if (!$this->has_only_allowed_function_calls($expression)) return false;
+        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/', $extra_patterns))
+            return false;
+        if (!$this->has_only_allowed_function_calls($expression))
+            return false;
         // Validate tokens
         $tokens = preg_split('/[\s\(\)\+\-\*\/,<>=]+/', $expression, -1, PREG_SPLIT_NO_EMPTY);
         foreach ($tokens as $token) {
-            if (is_numeric($token) || $this->is_allowed_sql_function($token)) continue;
+            if (is_numeric($token) || $this->is_allowed_sql_function($token))
+                continue;
             $cleaned_token = str_replace('`', '', $token);
-            if (!$this->is_valid_column_name($cleaned_token)) return false;
+            if (!$this->is_valid_column_name($cleaned_token))
+                return false;
         }
         return true;
     }
@@ -324,7 +340,8 @@ trait QueryValidationTrait
      */
     protected function is_valid_calculation_expression($expression)
     {
-        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`%<>=\'"]+$/')) return false;
+        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`%<>=\'"]+$/'))
+            return false;
 
         // Block dangerous SQL keywords (but allow CASE, WHEN, THEN, ELSE, END)
         $dangerous_keywords = [
@@ -342,7 +359,8 @@ trait QueryValidationTrait
             'VALUES'
         ];
         foreach ($dangerous_keywords as $keyword) {
-            if (preg_match('/\b' . $keyword . '\b/i', $expression)) return false;
+            if (preg_match('/\b' . $keyword . '\b/i', $expression))
+                return false;
         }
 
         // Remove quoted strings temporarily for token validation
@@ -350,25 +368,31 @@ trait QueryValidationTrait
         $expression_without_strings = preg_replace("/'[^']*'/", 'STRING_LITERAL', $expression_without_strings);
 
         $extra_allowed_functions = ['POW', 'SQRT', 'MOD', 'CURDATE', 'CURTIME'];
-        if (!$this->has_only_allowed_function_calls($expression_without_strings, $extra_allowed_functions)) return false;
+        if (!$this->has_only_allowed_function_calls($expression_without_strings, $extra_allowed_functions))
+            return false;
 
         // Validate tokens (exclude string literals)
         $tokens = preg_split('/[\s\(\)\+\-\*\/,%<>=]+/', $expression_without_strings, -1, PREG_SPLIT_NO_EMPTY);
         foreach ($tokens as $token) {
             // Skip string literal placeholders
-            if ($token === 'STRING_LITERAL') continue;
+            if ($token === 'STRING_LITERAL')
+                continue;
 
             // Allow numbers
-            if (is_numeric($token)) continue;
+            if (is_numeric($token))
+                continue;
 
             // Allow SQL functions
-            if ($this->is_allowed_sql_function($token)) continue;
+            if ($this->is_allowed_sql_function($token))
+                continue;
 
             // Allow TRUE/FALSE and other safe keywords
-            if (in_array(strtoupper($token), ['TRUE', 'FALSE', 'DISTINCT', 'HOUR', 'MINUTE', 'SECOND', 'CURDATE', 'CURTIME', 'POW', 'SQRT', 'MOD'])) continue;
+            if (in_array(strtoupper($token), ['TRUE', 'FALSE', 'DISTINCT', 'HOUR', 'MINUTE', 'SECOND', 'CURDATE', 'CURTIME', 'POW', 'SQRT', 'MOD']))
+                continue;
 
             // Validate column names
-            if (!$this->is_valid_column_name($token)) return false;
+            if (!$this->is_valid_column_name($token))
+                return false;
         }
         return true;
     }
@@ -390,7 +414,8 @@ trait QueryValidationTrait
             } elseif ($expression[$i] === ')') {
                 $count--;
                 // If we have more closing than opening, it's unbalanced
-                if ($count < 0) return false;
+                if ($count < 0)
+                    return false;
             }
         }
 
@@ -660,7 +685,8 @@ class CustomQueryBuilderResult
      */
     public function row_array($index = 0)
     {
-        if (empty($this->_data) || !isset($this->_data[$index])) return null;
+        if (empty($this->_data) || !isset($this->_data[$index]))
+            return null;
         $converted = $this->convert_relations_to_array([$this->_data[$index]]);
         return isset($converted[0]) ? $converted[0] : null;
     }
@@ -673,7 +699,8 @@ class CustomQueryBuilderResult
      */
     public function row($index = 0)
     {
-        if (!isset($this->_data[$index])) return null;
+        if (!isset($this->_data[$index]))
+            return null;
         $converted = $this->convert_relations_to_object([$this->_data[$index]]);
         return $converted[0];
     }
@@ -690,7 +717,8 @@ class CustomQueryBuilderResult
     public function value($column)
     {
         $row = $this->row();
-        if ($row === null) return null;
+        if ($row === null)
+            return null;
 
         $property = strpos($column, '.') !== false ? substr($column, strrpos($column, '.') + 1) : $column;
         return isset($row->$property) ? $row->$property : null;
@@ -705,7 +733,8 @@ class CustomQueryBuilderResult
     private function convert_relations_to_array($data)
     {
         return array_map(function ($item) {
-            if (is_object($item)) $item = (array) $item;
+            if (is_object($item))
+                $item = (array) $item;
             foreach ($item as $k => $v) {
                 if (is_object($v)) {
                     $item[$k] = $this->deep_object_to_array($v);
@@ -733,7 +762,8 @@ class CustomQueryBuilderResult
     private function convert_relations_to_object($data)
     {
         return array_map(function ($item) {
-            if (is_object($item)) $item = (array) $item;
+            if (is_object($item))
+                $item = (array) $item;
             foreach ($item as $k => $v) {
                 if (is_array($v)) {
                     if ($this->is_array_list($v)) {
@@ -763,9 +793,11 @@ class CustomQueryBuilderResult
      */
     private function deep_convert($data, $to_object = false, $depth = 0, $maxDepth = 20)
     {
-        if ($depth > $maxDepth) return null; // Prevent infinite recursion
+        if ($depth > $maxDepth)
+            return null; // Prevent infinite recursion
 
-        if (is_object($data)) $data = (array) $data;
+        if (is_object($data))
+            $data = (array) $data;
         if (is_array($data)) {
             foreach ($data as $k => $v) {
                 if (is_object($v) || is_array($v)) {
@@ -815,7 +847,8 @@ class CustomQueryBuilderResult
      */
     private function is_array_list(array $arr)
     {
-        if (empty($arr)) return true;
+        if (empty($arr))
+            return true;
         return array_keys($arr) === range(0, count($arr) - 1);
     }
 
@@ -829,7 +862,8 @@ class CustomQueryBuilderResult
     {
         if (is_array($item)) {
             foreach ($item as $key => $value) {
-                if (is_string($key) && strpos($key, '_auto_rel_') === 0) unset($item[$key]);
+                if (is_string($key) && strpos($key, '_auto_rel_') === 0)
+                    unset($item[$key]);
             }
         }
         return $item;
@@ -1018,13 +1052,15 @@ trait RelationAggregateTrait
     public function _qbw_buffer_flush_from($mark)
     {
         $count = count($this->_pending_where_reorder_buffer);
-        if ($count <= $mark) return;
+        if ($count <= $mark)
+            return;
 
         $buffer = array_slice($this->_pending_where_reorder_buffer, $mark);
         $this->_pending_where_reorder_buffer = array_slice($this->_pending_where_reorder_buffer, 0, $mark);
 
         usort($buffer, function ($a, $b) {
-            if ($a['pos'] === $b['pos']) return $a['seq'] - $b['seq'];
+            if ($a['pos'] === $b['pos'])
+                return $a['seq'] - $b['seq'];
             return $a['pos'] - $b['pos'];
         });
 
@@ -1072,7 +1108,8 @@ trait RelationAggregateTrait
             $this->where($clause, null, false);
         }
 
-        if ($order === null) return;
+        if ($order === null)
+            return;
 
         $target = $this->_qbw_target();
         $entry = $target->_qbw_pop();
@@ -1093,10 +1130,12 @@ trait RelationAggregateTrait
     {
         $target = $this->_qbw_target();
         $buffer = $target->_qbw_buffer_drain();
-        if (empty($buffer)) return;
+        if (empty($buffer))
+            return;
 
         usort($buffer, function ($a, $b) {
-            if ($a['pos'] === $b['pos']) return $a['seq'] - $b['seq'];
+            if ($a['pos'] === $b['pos'])
+                return $a['seq'] - $b['seq'];
             return $a['pos'] - $b['pos'];
         });
 
@@ -1151,7 +1190,8 @@ trait RelationAggregateTrait
         $relation_name = '';
         $alias = '';
 
-        if (!is_bool($multiple)) throw new InvalidArgumentException('Parameter $multiple must be a boolean value (true or false).');
+        if (!is_bool($multiple))
+            throw new InvalidArgumentException('Parameter $multiple must be a boolean value (true or false).');
 
         if (is_array($relation)) {
             if (count($relation) !== 1) {
@@ -1478,7 +1518,7 @@ trait RelationAggregateTrait
         }
 
         $foreign_keys = is_array($foreignKey) ? $foreignKey : [$foreignKey];
-        $local_keys   = is_array($localKey)   ? $localKey   : [$localKey];
+        $local_keys = is_array($localKey) ? $localKey : [$localKey];
 
         if (count($foreign_keys) !== count($local_keys)) {
             throw new InvalidArgumentException("join_{$type}: foreign key count must match local key count.");
@@ -1495,39 +1535,48 @@ trait RelationAggregateTrait
 
         switch ($type_lower) {
             case 'count':
-                $agg_func      = 'COUNT(*)';
+                $agg_func = 'COUNT(*)';
                 $default_alias = $relation_ref . '_count';
                 break;
             case 'sum':
-                if (!$column) throw new InvalidArgumentException('join_sum: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_sum: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'SUM(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                if (!$column)
+                    throw new InvalidArgumentException('join_sum: $column is required.');
+                if (!$this->is_valid_column_name($column))
+                    throw new InvalidArgumentException("join_sum: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func = 'SUM(' . $this->_quote_agg_column($column, $relation_ref) . ')';
                 $default_alias = $relation_ref . '_sum';
                 break;
             case 'avg':
-                if (!$column) throw new InvalidArgumentException('join_avg: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_avg: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'AVG(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                if (!$column)
+                    throw new InvalidArgumentException('join_avg: $column is required.');
+                if (!$this->is_valid_column_name($column))
+                    throw new InvalidArgumentException("join_avg: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func = 'AVG(' . $this->_quote_agg_column($column, $relation_ref) . ')';
                 $default_alias = $relation_ref . '_avg';
                 break;
             case 'min':
-                if (!$column) throw new InvalidArgumentException('join_min: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_min: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'MIN(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                if (!$column)
+                    throw new InvalidArgumentException('join_min: $column is required.');
+                if (!$this->is_valid_column_name($column))
+                    throw new InvalidArgumentException("join_min: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func = 'MIN(' . $this->_quote_agg_column($column, $relation_ref) . ')';
                 $default_alias = $relation_ref . '_min';
                 break;
             case 'max':
-                if (!$column) throw new InvalidArgumentException('join_max: $column is required.');
-                if (!$this->is_valid_column_name($column)) throw new InvalidArgumentException("join_max: invalid column name '" . htmlspecialchars($column) . "'");
-                $agg_func      = 'MAX(' . $this->_quote_agg_column($column, $relation_ref) . ')';
+                if (!$column)
+                    throw new InvalidArgumentException('join_max: $column is required.');
+                if (!$this->is_valid_column_name($column))
+                    throw new InvalidArgumentException("join_max: invalid column name '" . htmlspecialchars($column) . "'");
+                $agg_func = 'MAX(' . $this->_quote_agg_column($column, $relation_ref) . ')';
                 $default_alias = $relation_ref . '_max';
                 break;
             case 'custom_calculation':
-                if (!$column) throw new InvalidArgumentException('join_calculation: $expression is required.');
+                if (!$column)
+                    throw new InvalidArgumentException('join_calculation: $expression is required.');
                 if (!$this->is_valid_calculation_expression($column)) {
                     throw new InvalidArgumentException("join_calculation: invalid expression '" . htmlspecialchars($column) . "'");
                 }
-                $agg_func      = $column; // raw expression, e.g. SUM(a) / SUM(b) * 100
+                $agg_func = $column; // raw expression, e.g. SUM(a) / SUM(b) * 100
                 $default_alias = $relation_ref . '_calculation';
                 break;
             default:
@@ -1535,13 +1584,13 @@ trait RelationAggregateTrait
         }
 
         $this->pending_join_aggregates[] = [
-            'type'        => $type_lower,
-            'relation'    => $relation,
+            'type' => $type_lower,
+            'relation' => $relation,
             'foreign_key' => $foreign_keys,
-            'local_key'   => $local_keys,
-            'aggregate'   => $agg_func,
-            'alias'       => $alias ?: $default_alias,
-            'callback'    => $callback,
+            'local_key' => $local_keys,
+            'aggregate' => $agg_func,
+            'alias' => $alias ?: $default_alias,
+            'callback' => $callback,
         ];
 
         return $this;
@@ -1572,8 +1621,8 @@ trait RelationAggregateTrait
      */
     public function join_count($relation, $foreignKey, $localKey, $callback = null)
     {
-        $alias         = is_array($relation) ? current($relation) : null;
-        $relation_name = is_array($relation) ? key($relation)     : $relation;
+        $alias = is_array($relation) ? current($relation) : null;
+        $relation_name = is_array($relation) ? key($relation) : $relation;
         return $this->add_join_aggregate('count', $relation_name, $foreignKey, $localKey, null, $alias, $callback);
     }
 
@@ -1609,7 +1658,7 @@ trait RelationAggregateTrait
     public function join_sum($relation, $foreignKey, $localKey, $column, $callback = null)
     {
         $resolved_alias = is_array($relation) ? current($relation) : null;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        $relation_name = is_array($relation) ? key($relation) : $relation;
         return $this->add_join_aggregate('sum', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
     }
 
@@ -1631,7 +1680,7 @@ trait RelationAggregateTrait
     public function join_avg($relation, $foreignKey, $localKey, $column, $callback = null)
     {
         $resolved_alias = is_array($relation) ? current($relation) : null;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        $relation_name = is_array($relation) ? key($relation) : $relation;
         return $this->add_join_aggregate('avg', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
     }
 
@@ -1653,7 +1702,7 @@ trait RelationAggregateTrait
     public function join_min($relation, $foreignKey, $localKey, $column, $callback = null)
     {
         $resolved_alias = is_array($relation) ? current($relation) : null;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        $relation_name = is_array($relation) ? key($relation) : $relation;
         return $this->add_join_aggregate('min', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
     }
 
@@ -1676,7 +1725,7 @@ trait RelationAggregateTrait
     public function join_max($relation, $foreignKey, $localKey, $column, $callback = null)
     {
         $resolved_alias = is_array($relation) ? current($relation) : null;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        $relation_name = is_array($relation) ? key($relation) : $relation;
         return $this->add_join_aggregate('max', $relation_name, $foreignKey, $localKey, $column, $resolved_alias, $callback);
     }
 
@@ -1732,7 +1781,7 @@ trait RelationAggregateTrait
     public function join_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)
     {
         $resolved_alias = is_array($relation) ? current($relation) : null;
-        $relation_name  = is_array($relation) ? key($relation)     : $relation;
+        $relation_name = is_array($relation) ? key($relation) : $relation;
         return $this->add_join_aggregate('custom_calculation', $relation_name, $foreignKey, $localKey, $expression, $resolved_alias, $callback);
     }
 
@@ -1801,7 +1850,8 @@ trait RelationAggregateTrait
      */
     public function with_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)
     {
-        if (!is_callable($callback) && $callback) throw new InvalidArgumentException('Callback must be callable');
+        if (!is_callable($callback) && $callback)
+            throw new InvalidArgumentException('Callback must be callable');
         if (!$this->is_valid_calculation_expression($expression)) {
             throw new InvalidArgumentException("Invalid calculation expression: {$expression}");
         }
@@ -2666,7 +2716,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         return $this->_safe_in_clause($key, $values, TRUE, 'AND ', $escape);
     }
 
-	// --------------------------------------------------------------------
+    // --------------------------------------------------------------------
 
     /**
      * OR WHERE NOT IN
@@ -2733,13 +2783,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
         }
 
-        $not_str   = $not ? ' NOT' : '';
+        $not_str = $not ? ' NOT' : '';
         $condition = $prefix . $key . $not_str . ' IN (' . $in_list . ')';
 
         $this->qb_where[] = ['condition' => $condition, 'escape' => FALSE];
 
         if ($this->qb_caching === TRUE) {
-            $this->qb_cache_where[]  = end($this->qb_where);
+            $this->qb_cache_where[] = end($this->qb_where);
             $this->qb_cache_exists[] = 'where';
         }
 
@@ -2793,8 +2843,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $safe_from[] = $item;
             }
 
-            if (empty($safe_from)) return $this;
-            if (count($safe_from) === 1) return parent::from(reset($safe_from));
+            if (empty($safe_from))
+                return $this;
+            if (count($safe_from) === 1)
+                return parent::from(reset($safe_from));
             return parent::from($safe_from);
         }
         return parent::from($from);
@@ -3004,7 +3056,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_between($column, array $values)
     {
-        if (count($values) !== 2) throw new InvalidArgumentException('where_between() expects exactly 2 values.');
+        if (count($values) !== 2)
+            throw new InvalidArgumentException('where_between() expects exactly 2 values.');
         $column = $this->protect_identifiers($column, true);
         $this->where("{$column} BETWEEN {$this->escape($values[0])} AND {$this->escape($values[1])}", null, false);
         return $this;
@@ -3020,7 +3073,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function where_not_between($column, array $values)
     {
-        if (count($values) !== 2) throw new InvalidArgumentException('where_not_between() expects exactly 2 values.');
+        if (count($values) !== 2)
+            throw new InvalidArgumentException('where_not_between() expects exactly 2 values.');
         $column = $this->protect_identifiers($column, true);
         $this->where("{$column} NOT BETWEEN {$this->escape($values[0])} AND {$this->escape($values[1])}", null, false);
         return $this;
@@ -3036,7 +3090,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_where_between($column, array $values)
     {
-        if (count($values) !== 2) throw new InvalidArgumentException('or_where_between() expects exactly 2 values.');
+        if (count($values) !== 2)
+            throw new InvalidArgumentException('or_where_between() expects exactly 2 values.');
         $column = $this->protect_identifiers($column, true);
         $this->or_where("{$column} BETWEEN {$this->escape($values[0])} AND {$this->escape($values[1])}", null, false);
         return $this;
@@ -3052,7 +3107,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_where_not_between($column, array $values)
     {
-        if (count($values) !== 2) throw new InvalidArgumentException('or_where_not_between() expects exactly 2 values.');
+        if (count($values) !== 2)
+            throw new InvalidArgumentException('or_where_not_between() expects exactly 2 values.');
         $column = $this->protect_identifiers($column, true);
         $this->or_where("{$column} NOT BETWEEN {$this->escape($values[0])} AND {$this->escape($values[1])}", null, false);
         return $this;
@@ -3521,7 +3577,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function order_by_sequence($column, $array)
     {
-        if (empty($array) || !is_array($array)) throw new InvalidArgumentException('Parameter $array must be an array value and cannot be empty.');
+        if (empty($array) || !is_array($array))
+            throw new InvalidArgumentException('Parameter $array must be an array value and cannot be empty.');
 
         if (!is_string($column) || empty($column)) {
             throw new InvalidArgumentException('Parameter $column must be a non-empty string.');
@@ -3594,7 +3651,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         $row = $this->select($column)->limit(1)->get($table)->row();
-        if ($row === null) return null;
+        if ($row === null)
+            return null;
 
         $property = strpos($column, '.') !== false ? substr($column, strrpos($column, '.') + 1) : $column;
         return isset($row->$property) ? $row->$property : null;
@@ -3680,11 +3738,13 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function search($term, $columns = [], $or = true)
     {
-        if (empty($columns)) return $this;
+        if (empty($columns))
+            return $this;
 
         $this->group(function ($q) use ($term, $columns, $or) {
             foreach ($columns as $index => $column) {
-                if (!is_string($column) || $column === '') continue;
+                if (!is_string($column) || $column === '')
+                    continue;
 
                 if ($index === 0) {
                     $q->like($column, $term, 'both');
@@ -3757,7 +3817,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function group($callback)
     {
-        if (!is_callable($callback)) throw new InvalidArgumentException('Callback must be callable');
+        if (!is_callable($callback))
+            throw new InvalidArgumentException('Callback must be callable');
 
         // Execute immediately when the table is already known (from() was called or we are
         // already inside process_pending_groups()), so the WHERE clause order is preserved.
@@ -3802,7 +3863,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function or_group($callback)
     {
-        if (!is_callable($callback)) throw new InvalidArgumentException('Callback must be callable');
+        if (!is_callable($callback))
+            throw new InvalidArgumentException('Callback must be callable');
 
         // Same as group() — execute immediately when the table is already known.
         if (
@@ -3892,7 +3954,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function process_pending_join_aggregates()
     {
-        if (empty($this->pending_join_aggregates)) return;
+        if (empty($this->pending_join_aggregates))
+            return;
 
         if (empty($this->qb_from)) {
             throw new Exception('join_sum/join_count/etc. require a table. Call from() or provide table in get().');
@@ -3910,12 +3973,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         foreach ($pending as $config) {
-            $relation     = $config['relation'];
+            $relation = $config['relation'];
             $foreign_keys = $config['foreign_key'];
-            $local_keys   = $config['local_key'];
-            $agg_func     = $config['aggregate'];
-            $alias        = $config['alias'];
-            $callback     = $config['callback'];
+            $local_keys = $config['local_key'];
+            $agg_func = $config['aggregate'];
+            $alias = $config['alias'];
+            $callback = $config['callback'];
 
             // Strip table prefix from FK — only bare column name lives inside derived table
             // (used for ON condition and result-column alias)
@@ -4060,7 +4123,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         // Handle SQL_CALC_FOUND_ROWS separately using compiled query
-        if ($this->_calc_rows_enabled) return $this->get_with_calc_rows($limit, $offset);
+        if ($this->_calc_rows_enabled)
+            return $this->get_with_calc_rows($limit, $offset);
 
         $this->process_pending_groups();
         $this->process_pending_where_has();
@@ -4076,14 +4140,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
         $this->_flush_where_reorder_buffer();
 
-        if (!empty($this->with_relations)) return $this->get_with_eager_loading('', $limit, $offset, null);
+        if (!empty($this->with_relations))
+            return $this->get_with_eager_loading('', $limit, $offset, null);
 
         // parent::get() calls $this->query() internally, which already returns a
         // CustomQueryBuilderResult — wrapping it again here would double-wrap.
         $result = parent::get('', $limit, $offset);
 
         $error = $this->error();
-        if ($error['code'] !== 0) $this->handle_database_error($error);
+        if ($error['code'] !== 0)
+            $this->handle_database_error($error);
 
         $this->db_debug = $original_debug;
 
@@ -4140,8 +4206,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
             // Add LIMIT for the count query if specified
             if ($limit !== null) {
-                $compiled_count_query .= ' LIMIT ' . (int)$limit;
-                if ($offset !== null && $offset > 0) $compiled_count_query .= ' OFFSET ' . (int)$offset;
+                $compiled_count_query .= ' LIMIT ' . (int) $limit;
+                if ($offset !== null && $offset > 0)
+                    $compiled_count_query .= ' OFFSET ' . (int) $offset;
             }
 
             // Execute count query with SQL_CALC_FOUND_ROWS
@@ -4154,7 +4221,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // Get the found_rows count
             $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
             $found_rows = 0;
-            if ($found_rows_query && $found_rows_query->num_rows() > 0) $found_rows = (int) $found_rows_query->row()->total;
+            if ($found_rows_query && $found_rows_query->num_rows() > 0)
+                $found_rows = (int) $found_rows_query->row()->total;
 
             // Restore the count query as last_query for debugging purposes
             $this->queries[] = $main_count_query;
@@ -4183,8 +4251,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Add LIMIT if specified
         if ($limit !== null) {
-            $compiled_query .= ' LIMIT ' . (int)$limit;
-            if ($offset !== null && $offset > 0) $compiled_query .= ' OFFSET ' . (int)$offset;
+            $compiled_query .= ' LIMIT ' . (int) $limit;
+            if ($offset !== null && $offset > 0)
+                $compiled_query .= ' OFFSET ' . (int) $offset;
         }
 
         // Replace SELECT with SELECT SQL_CALC_FOUND_ROWS
@@ -4203,7 +4272,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Get the found_rows count
         $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
         $found_rows = 0;
-        if ($found_rows_query && $found_rows_query->num_rows() > 0) $found_rows = (int) $found_rows_query->row()->total;
+        if ($found_rows_query && $found_rows_query->num_rows() > 0)
+            $found_rows = (int) $found_rows_query->row()->total;
 
         // Restore the main query as last_query for debugging purposes
         $this->queries[] = $main_query;
@@ -4223,20 +4293,24 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function get_where($table = '', $where = null, $limit = null, $offset = null)
     {
-        if ($table !== '') $this->from($table);
+        if ($table !== '')
+            $this->from($table);
 
-        if ($where !== null && is_array($where)) $this->where($where);
+        if ($where !== null && is_array($where))
+            $this->where($where);
 
-        if ($limit !== null) $this->limit($limit, $offset);
+        if ($limit !== null)
+            $this->limit($limit, $offset);
 
         if (
-            !empty($this->with_relations)         ||
-            !empty($this->pending_where_has)      ||
-            !empty($this->pending_aggregates)     ||
+            !empty($this->with_relations) ||
+            !empty($this->pending_where_has) ||
+            !empty($this->pending_aggregates) ||
             !empty($this->pending_join_aggregates) ||
-            !empty($this->pending_where_exists)   ||
+            !empty($this->pending_where_exists) ||
             !empty($this->pending_groups)
-        ) return $this->get();
+        )
+            return $this->get();
 
         $original_debug = $this->db_debug;
         $this->db_debug = FALSE;
@@ -4246,7 +4320,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $result = parent::get_where('', null, null, null);
 
         $error = $this->error();
-        if ($error['code'] !== 0) $this->handle_database_error($error);
+        if ($error['code'] !== 0)
+            $this->handle_database_error($error);
 
         $this->db_debug = $original_debug;
 
@@ -4288,7 +4363,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         $result = parent::count_all_results('', $reset);
 
-        if (!$reset) $this->with_relations = $original_relations;
+        if (!$reset)
+            $this->with_relations = $original_relations;
 
         return $result;
     }
@@ -4324,8 +4400,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->with_relations = [];
 
         $result = parent::get_compiled_select('', $reset);
-        if (!$reset) $this->with_relations = $original_relations;
-        if ($reset) $this->reset_query();
+        if (!$reset)
+            $this->with_relations = $original_relations;
+        if ($reset)
+            $this->reset_query();
 
         return $result;
     }
@@ -4380,12 +4458,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $chunk_data = $chunk_result->result();
             $chunk_count = count($chunk_data);
 
-            if ($chunk_count === 0) break;
+            if ($chunk_count === 0)
+                break;
 
             // Execute callback
             $continue = $callback($chunk_data, $page);
 
-            if ($continue === false) break;
+            if ($continue === false)
+                break;
 
             $total_processed += $chunk_count;
             $page++;
@@ -4400,7 +4480,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             // Stop jika chunk terakhir tidak penuh
-            if ($chunk_count < $page_size) break;
+            if ($chunk_count < $page_size)
+                break;
         } while (true);
 
         return $total_processed;
@@ -4467,12 +4548,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $chunk_data = $chunk_result->result();
             $chunk_count = count($chunk_data);
 
-            if ($chunk_count === 0) break;
+            if ($chunk_count === 0)
+                break;
 
             // Execute callback
             $continue = $callback($chunk_data, $page);
 
-            if ($continue === false) break;
+            if ($continue === false)
+                break;
 
             // Get last ID from chunk
             $last_record = end($chunk_data);
@@ -4499,7 +4582,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             // Stop jika chunk terakhir tidak penuh
-            if ($chunk_count < $page_size) break;
+            if ($chunk_count < $page_size)
+                break;
         } while (true);
 
         return $total_processed;
@@ -4552,7 +4636,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function process_pending_where_has()
     {
-        if (empty($this->pending_where_has)) return;
+        if (empty($this->pending_where_has))
+            return;
 
         if (empty($this->qb_from)) {
             throw new Exception('where_has() requires a table to be set. Please call from() method or provide table in get() method.');
@@ -4649,7 +4734,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function process_pending_aggregates($context_table = null)
     {
-        if (empty($this->pending_aggregates)) return;
+        if (empty($this->pending_aggregates))
+            return;
 
         if (empty($this->qb_from)) {
             throw new Exception('Aggregate functions require a table to be set. Please call from() method or provide table in get() method.');
@@ -4661,7 +4747,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Ensure we have a proper SELECT clause first
         $current_select = $this->qb_select;
-        if (empty($current_select)) $this->select('*');
+        if (empty($current_select))
+            $this->select('*');
 
         // Use context_table if provided (for nested callbacks), otherwise use qb_from
         $mainTable = $context_table ? $context_table : $this->qb_from[0];
@@ -4825,7 +4912,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             // Add subquery directly to qb_select array to preserve existing SELECT fields
             $compiled_subquery = $subquery->get_compiled_select();
             $result_alias = $aggregate_config['alias'];
-            if ($table_name != $subquery_alias) $result_alias = $this->extract_table_or_alias($aggregate_config['alias']);
+            if ($table_name != $subquery_alias)
+                $result_alias = $this->extract_table_or_alias($aggregate_config['alias']);
             $subquery_select = "($compiled_subquery) AS " . $this->protect_identifiers($result_alias);
 
             // Directly add to qb_select array instead of using select() method
@@ -4845,7 +4933,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function process_pending_where_aggregates($context_table = null)
     {
-        if (empty($this->pending_where_aggregates)) return;
+        if (empty($this->pending_where_aggregates))
+            return;
 
         // A table context is required: either qb_from must be set OR a context_table
         // must have been passed in (e.g. from _execute_group_immediately / chunk).
@@ -5176,7 +5265,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
     protected function process_pending_groups()
     {
-        if (empty($this->pending_groups)) return;
+        if (empty($this->pending_groups))
+            return;
 
         $groups = $this->pending_groups;
         $this->pending_groups = [];
@@ -5218,7 +5308,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function process_pending_where_queue($parent_table)
     {
-        if (empty($this->pending_where_queue)) return;
+        if (empty($this->pending_where_queue))
+            return;
 
         // Extract table alias or name from parent_table (can be null)
         $parent_table_identifier = $parent_table ? $this->extract_table_or_alias($parent_table) : null;
@@ -5323,7 +5414,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function process_pending_where_exists($parent_table)
     {
-        if (empty($this->pending_where_exists)) return;
+        if (empty($this->pending_where_exists))
+            return;
 
         // Extract table alias or name from parent_table (in case it contains "table_name alias")
         $parent_table_identifier = $this->extract_table_or_alias($parent_table);
@@ -5440,7 +5532,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->_executed_queries[] = parent::last_query();
 
         $error = $this->error();
-        if ($error['code'] !== 0) $this->handle_database_error($error);
+        if ($error['code'] !== 0)
+            $this->handle_database_error($error);
 
         $this->db_debug = $original_debug;
 
@@ -5467,7 +5560,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function auto_include_relation_keys()
     {
-        if (empty($this->with_relations)) return;
+        if (empty($this->with_relations))
+            return;
 
         $required_keys = [];
 
@@ -5484,7 +5578,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         $current_select = $this->qb_select;
 
-        if (empty($current_select) || (count($current_select) === 1 && $current_select[0] === '*')) return;
+        if (empty($current_select) || (count($current_select) === 1 && $current_select[0] === '*'))
+            return;
 
         // Extract already selected fields including those with table aliases
         $selected_fields = [];
@@ -5546,7 +5641,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function load_relations($data, $relations)
     {
-        if (empty($relations)) return $data;
+        if (empty($relations))
+            return $data;
 
         foreach ($relations as $relation_config) {
             $data = $this->load_single_relation($data, $relation_config);
@@ -5636,7 +5732,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             });
         }
 
-        if ((count($local_keys) > 1 && empty($composite_values)) ||
+        if (
+            (count($local_keys) > 1 && empty($composite_values)) ||
             (count($local_keys) === 1 && empty($local_values))
         ) {
             foreach ($data as &$item) {
@@ -5866,7 +5963,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     // Add subquery to main query SELECT (append to existing SELECT, not replace)
                     $compiled_subquery = $subquery->get_compiled_select();
                     $result_alias = $aggregate_config['alias'];
-                    if ($table_name != $subquery_alias) $result_alias = $this->extract_table_or_alias($aggregate_config['alias']);
+                    if ($table_name != $subquery_alias)
+                        $result_alias = $this->extract_table_or_alias($aggregate_config['alias']);
                     $relation_builder->db->select("($compiled_subquery) as {$result_alias}", false);
                 }
             }
@@ -5913,7 +6011,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     $this->_executed_queries = array_merge($this->_executed_queries, $relation_builder->db->_executed_queries);
                 } else {
                     $sql = $relation_builder->db->last_query();
-                    if ($sql) $this->_executed_queries[] = $sql;
+                    if ($sql)
+                        $this->_executed_queries[] = $sql;
                 }
                 $relation_data = [];
                 if ($relation_result->num_rows() > 0) {
@@ -5927,7 +6026,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     $this->_executed_queries = array_merge($this->_executed_queries, $relation_builder->db->_executed_queries);
                 } else {
                     $sql = $relation_builder->db->last_query();
-                    if ($sql) $this->_executed_queries[] = $sql;
+                    if ($sql)
+                        $this->_executed_queries[] = $sql;
                 }
                 $relation_data = $relation_result->result_array();
             }
@@ -5948,7 +6048,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $relation_result = $relation_query->get();
             // Capture relation query (simple path — no callback)
             $sql = $relation_query->last_query();
-            if ($sql) $this->_executed_queries[] = $sql;
+            if ($sql)
+                $this->_executed_queries[] = $sql;
             $relation_data = $relation_result->result_array();
         }
 
@@ -5977,19 +6078,20 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
 
             if ($config['multiple']) {
-                if (!isset($grouped_relations[$key])) $grouped_relations[$key] = [];
+                if (!isset($grouped_relations[$key]))
+                    $grouped_relations[$key] = [];
                 $grouped_relations[$key][] = $relation_item;
             } else {
                 if (self::FIX_WITH_ONE_ORDER_BY) {
                     // Only store the first occurrence so that the ORDER BY from the
                     // callback is respected (e.g. DESC keeps the highest value row).
                     if (!isset($grouped_relations[$key])) {
-                        $grouped_relations[$key] = is_array($relation_item) ? (object)$relation_item : $relation_item;
+                        $grouped_relations[$key] = is_array($relation_item) ? (object) $relation_item : $relation_item;
                     }
                 } else {
                     // Pre-fix behavior: the last matching row always wins,
                     // regardless of any order_by() in the relation callback.
-                    $grouped_relations[$key] = is_array($relation_item) ? (object)$relation_item : $relation_item;
+                    $grouped_relations[$key] = is_array($relation_item) ? (object) $relation_item : $relation_item;
                 }
             }
         }
@@ -6001,15 +6103,18 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 if ($config['multiple']) {
                     foreach ($rel_group as &$rel_item) {
                         if (is_array($rel_item)) {
-                            foreach ($auto_added_fk_columns as $fk_col) unset($rel_item[$fk_col]);
+                            foreach ($auto_added_fk_columns as $fk_col)
+                                unset($rel_item[$fk_col]);
                         }
                     }
                     unset($rel_item);
                 } else {
                     if (is_object($rel_group)) {
-                        foreach ($auto_added_fk_columns as $fk_col) unset($rel_group->$fk_col);
+                        foreach ($auto_added_fk_columns as $fk_col)
+                            unset($rel_group->$fk_col);
                     } elseif (is_array($rel_group)) {
-                        foreach ($auto_added_fk_columns as $fk_col) unset($rel_group[$fk_col]);
+                        foreach ($auto_added_fk_columns as $fk_col)
+                            unset($rel_group[$fk_col]);
                     }
                 }
             }
@@ -6094,7 +6199,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         $current_select = $query_instance->qb_select;
 
-        if (empty($current_select) || (count($current_select) === 1 && $current_select[0] === '*')) return;
+        if (empty($current_select) || (count($current_select) === 1 && $current_select[0] === '*'))
+            return;
 
         // Extract actual column name from foreign_key (remove table prefix if exists)
         $actual_column = $foreign_key;
@@ -6110,7 +6216,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // so we can safely skip adding it again.
         foreach ($current_select as $select_item) {
             $clean = trim(str_replace('`', '', $select_item));
-            if (preg_match('/^(\w+)\.\*$/', $clean)) return false; // FK already covered by table.* wildcard
+            if (preg_match('/^(\w+)\.\*$/', $clean))
+                return false; // FK already covered by table.* wildcard
         }
 
         $selected_fields = [];
@@ -6150,7 +6257,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function auto_include_nested_keys($relation_builder)
     {
-        if (empty($relation_builder->with_relations)) return;
+        if (empty($relation_builder->with_relations))
+            return;
 
         $required_keys = [];
 
@@ -6167,7 +6275,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         $current_select = $relation_builder->db->qb_select;
 
-        if (empty($current_select) || (count($current_select) === 1 && $current_select[0] === '*')) return;
+        if (empty($current_select) || (count($current_select) === 1 && $current_select[0] === '*'))
+            return;
 
         // Extract selected fields — capture AS alias when present (mirrors auto_include_relation_keys)
         $selected_fields = [];
@@ -6209,9 +6318,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             if (!in_array($actual_column, $selected_fields) && !in_array($auto_rel_key, $selected_fields)) {
                 // Bug fix #1 & #4: qualify with table alias and add _auto_rel_ alias so the
                 // column is tracked and cleaned up by remove_auto_relation_keys() later
-                $tbl_name    = $relation_builder->db->protect_identifiers($table_alias, true);
+                $tbl_name = $relation_builder->db->protect_identifiers($table_alias, true);
                 $column_name = $relation_builder->db->protect_identifiers($actual_column, true);
-                $alias_name  = $relation_builder->db->protect_identifiers($auto_rel_key, true);
+                $alias_name = $relation_builder->db->protect_identifiers($auto_rel_key, true);
                 if ($table_alias !== '') {
                     $relation_builder->db->select("{$tbl_name}.{$column_name} AS {$alias_name}", false);
                 } else {
@@ -6232,7 +6341,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function transaction($callback, $strict = false)
     {
-        if (!is_callable($callback)) throw new InvalidArgumentException('Callback must be callable');
+        if (!is_callable($callback))
+            throw new InvalidArgumentException('Callback must be callable');
 
         // Set error reporting untuk catch semua error
         $old_error_reporting = error_reporting();
@@ -6294,7 +6404,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 isset($caller['line']) ? $caller['line'] : 0
             );
 
-            if ($strict) throw new Exception($error_details, 0, $exception);
+            if ($strict)
+                throw new Exception($error_details, 0, $exception);
 
             // Log error
             if (function_exists('log_message')) {
@@ -6376,7 +6487,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function all_last_query()
     {
-        if (!empty($this->_executed_queries)) return $this->_executed_queries;
+        if (!empty($this->_executed_queries))
+            return $this->_executed_queries;
         return [parent::last_query()];
     }
 
@@ -6460,7 +6572,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         }
 
         // If query failed, return standard result
-        if (!$query) return $query;
+        if (!$query)
+            return $query;
 
         // Store relations
         $relations = $this->with_relations;
@@ -6472,10 +6585,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $data = $query->result_array();
 
         // If no data, return empty CustomQueryBuilderResult
-        if (empty($data)) return new CustomQueryBuilderResult([]);
+        if (empty($data))
+            return new CustomQueryBuilderResult([]);
 
         // Process eager loading relations (with_one, with_many)
-        if ($has_relations) $data = $this->load_relations($data, $relations);
+        if ($has_relations)
+            $data = $this->load_relations($data, $relations);
 
         // Return wrapped result with relations
         return new CustomQueryBuilderResult($data);
