@@ -2882,6 +2882,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function _safe_in_clause($key, array $values, $not = FALSE, $type = 'AND ', $escape = NULL)
     {
+        if (!$this->is_valid_column_name($key)) {
+            throw new InvalidArgumentException("Invalid column name: {$key}");
+        }
+        $key = $this->protect_identifiers($key);
+
         // Mirror CI's _wh() prefix logic exactly:
         // - first condition ever → no prefix
         // - first condition right after group_start() → no prefix (clears qb_where_group_started flag)
