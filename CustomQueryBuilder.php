@@ -916,6 +916,8 @@ class NestedQueryBuilder
         $relation_name = '';
         $alias = '';
 
+        if (!is_bool($multiple)) throw new InvalidArgumentException('Parameter $multiple must be a boolean value (true or false).');
+
         if (is_array($relation)) {
             if (count($relation) === 1) {
                 $relation_name = key($relation);
@@ -927,6 +929,12 @@ class NestedQueryBuilder
         } else {
             $relation_name = $relation;
             $alias = $relation;
+        }
+
+        // VALIDASI KEAMANAN: Validasi relation name (extract base table name for validation, alias is allowed)
+        $relation_name_for_validation = $this->extract_table_name($relation_name);
+        if (!$this->is_valid_table_name($relation_name_for_validation)) {
+            throw new InvalidArgumentException("Invalid relation name: {$relation_name}. Only alphanumeric characters and underscores are allowed.");
         }
 
         $processed_local_keys = $this->process_keys($localKey, 'local key');
