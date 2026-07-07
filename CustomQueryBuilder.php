@@ -2471,6 +2471,24 @@ class CustomQueryBuilder extends CI_DB_query_builder
 {
     use QueryValidationTrait;
     use RelationAggregateTrait;
+
+    /**
+     * Controls how with_one()/with_many() pick a row when several relation
+     * rows match the same local key.
+     *
+     * true (default, fixed behavior): the FIRST matching row is kept, so an
+     * order_by() inside the relation callback is respected — e.g.
+     * ->with_one('scores', ..., function ($q) { $q->order_by('value', 'DESC'); })
+     * correctly keeps the highest-value row.
+     *
+     * false (pre-fix behavior): the LAST matching row wins instead, ignoring
+     * the intent of order_by(). Only flip this to false to temporarily
+     * reproduce the old, order-ignoring behavior (e.g. while auditing code
+     * that may have been written against — or accidentally depends on — the
+     * old bug). Do not ship with this set to false.
+     */
+    const FIX_WITH_ONE_ORDER_BY = true;
+
     /**
      * @var array Array of with relations for eager loading
      */
@@ -5962,9 +5980,15 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 if (!isset($grouped_relations[$key])) $grouped_relations[$key] = [];
                 $grouped_relations[$key][] = $relation_item;
             } else {
-                // Only store the first occurrence so that the ORDER BY from the
-                // callback is respected (e.g. DESC keeps the highest value row).
-                if (!isset($grouped_relations[$key])) {
+                if (self::FIX_WITH_ONE_ORDER_BY) {
+                    // Only store the first occurrence so that the ORDER BY from the
+                    // callback is respected (e.g. DESC keeps the highest value row).
+                    if (!isset($grouped_relations[$key])) {
+                        $grouped_relations[$key] = is_array($relation_item) ? (object)$relation_item : $relation_item;
+                    }
+                } else {
+                    // Pre-fix behavior: the last matching row always wins,
+                    // regardless of any order_by() in the relation callback.
                     $grouped_relations[$key] = is_array($relation_item) ? (object)$relation_item : $relation_item;
                 }
             }
