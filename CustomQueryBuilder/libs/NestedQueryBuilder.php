@@ -78,6 +78,52 @@ class NestedQueryBuilder
         return $result === $this->db ? $this : $result;
     }
 
+    /**
+     * Transfer this wrapper's own queued relation/aggregate state onto $target_db
+     * and process it there.
+     *
+     * with(), with_count()/with_sum()/with_avg()/with_min()/with_max()/
+     * with_calculation(), where_aggregate()/or_where_aggregate(),
+     * where_exists_relation()/where_not_exists_relation() (and their or_
+     * variants), where_has()/or_where_has(), and join_count()/join_sum()/etc.
+     * all come from RelationAggregateTrait, which this class also uses — so
+     * calling them on a NestedQueryBuilder instance queues their pending
+     * state on the WRAPPER's own properties (declared above), not on the
+     * $db it wraps. Anything that only proxies through __call() (like
+     * get_compiled_select()) never sees that state. Callers must invoke this
+     * before compiling the wrapped query, or the queued conditions/columns
+     * are silently dropped.
+     *
+     * @param CustomQueryBuilder $target_db
+     * @return void
+     */
+    protected function _flush_own_pending_state_into($target_db)
+    {
+        // NestedQueryBuilder does not extend CustomQueryBuilder (it wraps one via
+        // composition), so it cannot write $target_db's protected pending_* properties
+        // directly — PHP's protected visibility only allows cross-instance access from
+        // within a method of the SAME class. merge_pending_relation_state() is the
+        // public hand-off point defined on CustomQueryBuilder for exactly this.
+        $target_db->merge_pending_relation_state(
+            $this->with_relations,
+            $this->pending_aggregates,
+            $this->pending_where_exists,
+            $this->pending_where_aggregates,
+            $this->pending_join_aggregates,
+            isset($this->pending_where_has) ? $this->pending_where_has : []
+        );
+
+        $this->with_relations = [];
+        $this->pending_aggregates = [];
+        $this->pending_where_exists = [];
+        $this->pending_where_aggregates = [];
+        $this->pending_join_aggregates = [];
+        $this->pending_where_has = [];
+
+        // $target_db is always a single-column `SELECT 1` EXISTS subquery here — skip
+        // flushing pending_aggregates as a 2nd SELECT column, which would break that shape.
+        $target_db->flush_pending_relation_state(null, false);
+    }
 
     /**
      * Add WHERE EXISTS condition with callback
@@ -124,6 +170,16 @@ class NestedQueryBuilder
 
         // Execute callback to build subquery
         $callback($subquery);
+
+        // Transfer + flush any relation/aggregate state queued directly on
+        // $subquery (with(), with_count()/with_sum()/etc., where_aggregate(),
+        // where_exists_relation(), where_has(), join_count()/etc. are all
+        // defined on NestedQueryBuilder itself, so calls made on $subquery
+        // store their pending state on the WRAPPER's own properties, not on
+        // $subquery_db — without this, get_compiled_select() below (proxied
+        // straight to $subquery_db) has no idea any of it was queued and
+        // silently drops it from the compiled EXISTS subquery.
+        $subquery->_flush_own_pending_state_into($subquery_db);
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
@@ -180,6 +236,10 @@ class NestedQueryBuilder
         // Execute callback to build subquery
         $callback($subquery);
 
+        // Transfer + flush any relation/aggregate state queued directly on
+        // $subquery — see _flush_own_pending_state_into() for why this is needed.
+        $subquery->_flush_own_pending_state_into($subquery_db);
+
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
 
@@ -228,6 +288,10 @@ class NestedQueryBuilder
 
         // Execute callback to build subquery
         $callback($subquery);
+
+        // Transfer + flush any relation/aggregate state queued directly on
+        // $subquery — see _flush_own_pending_state_into() for why this is needed.
+        $subquery->_flush_own_pending_state_into($subquery_db);
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
@@ -279,6 +343,10 @@ class NestedQueryBuilder
 
         // Execute callback to build subquery
         $callback($subquery);
+
+        // Transfer + flush any relation/aggregate state queued directly on
+        // $subquery — see _flush_own_pending_state_into() for why this is needed.
+        $subquery->_flush_own_pending_state_into($subquery_db);
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();

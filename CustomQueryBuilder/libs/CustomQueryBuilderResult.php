@@ -100,9 +100,18 @@ class CustomQueryBuilderResult
     {
         $rows = $as_array ? $this->result_array() : $this->result();
 
+        // BUG FIX: is_callable('count') is TRUE — it returns true for any string
+        // naming an existing function, not just callbacks the caller intended as
+        // such. A perfectly ordinary aliased column like `COUNT(*) AS count`
+        // used to be silently misdetected as a callback and invoked as count($row),
+        // corrupting the whole result set instead of grouping by that column. A
+        // plain string $key always means "column name" per this method's contract;
+        // only a Closure or an array/object callable is treated as a callback.
+        $is_callback = !is_string($key) && is_callable($key);
+
         $keyed = [];
         foreach ($rows as $index => $row) {
-            if (is_callable($key)) {
+            if ($is_callback) {
                 $key_value = $key($row);
             } elseif (is_object($row)) {
                 $key_value = isset($row->$key) ? $row->$key : null;
@@ -118,7 +127,7 @@ class CustomQueryBuilderResult
                 // row with no error. Keep it under its original index instead,
                 // and surface a warning so a genuinely missing column is noticed.
                 trigger_error(
-                    "CustomQueryBuilderResult::key_by(): key '" . (is_callable($key) ? '(callback)' : $key) . "' is missing/null on row {$index}; keeping it under its original index instead of merging it with other rows.",
+                    "CustomQueryBuilderResult::key_by(): key '" . ($is_callback ? '(callback)' : $key) . "' is missing/null on row {$index}; keeping it under its original index instead of merging it with other rows.",
                     E_USER_WARNING
                 );
                 $keyed[$index] = $row;

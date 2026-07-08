@@ -739,12 +739,20 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Execute callback to build subquery
         $callback($subquery);
 
-        // Process any pending operations in subquery
-        if (!empty($subquery->pending_where_exists)) {
-            // For standard where_exists, we need to determine parent table context
-            // Since there's no explicit parent table, we'll use a generic approach
-            $subquery->process_pending_where_exists('__parent__');
-        }
+        // Process any pending relation/aggregate state queued by the callback
+        // (with_count(), where_aggregate(), nested where_exists_relation()/where_has(),
+        // join_count(), etc.). Pass no context table — process_pending_where_exists()
+        // falls back to $subquery's own qb_from (set by the callback's from() call),
+        // which is the only sensible resolution target for a bare local key here since
+        // this top-level where_exists() has no relation-style parent table of its own.
+        // BUG FIX: this previously only flushed pending_where_exists, using a literal
+        // '__parent__' placeholder string that was never a real table — any bare
+        // (non-dotted) local key in a nested where_exists_relation() call compiled into
+        // invalid SQL referencing a column on a nonexistent `__parent__` table, and
+        // pending_where_has/pending_aggregates/pending_where_aggregates/
+        // pending_join_aggregates were silently dropped entirely. $subquery is a
+        // single-column subquery shape here, so select-aggregates are skipped (false).
+        $subquery->flush_pending_relation_state(null, false);
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
@@ -776,10 +784,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Execute callback to build subquery
         $callback($subquery);
 
-        // Process any pending operations in subquery
-        if (!empty($subquery->pending_where_exists)) {
-            $subquery->process_pending_where_exists('__parent__');
-        }
+        // Process any pending relation/aggregate state queued by the callback —
+        // see where_exists() above for why no context table is passed and why
+        // select-aggregates are skipped (false); same reasoning applies here.
+        $subquery->flush_pending_relation_state(null, false);
 
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
@@ -876,7 +884,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
     public function where_has($relation, $foreignKey, $localKey, $callback = null, $operator = null, $count = null)
     {
         if (is_string($callback)) {
-            $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+            $allowed_operators = self::$ALLOWED_OPERATORS;
             if (!in_array($callback, $allowed_operators, true)) {
                 throw new InvalidArgumentException("Invalid operator: {$callback}. Allowed operators: " . implode(', ', $allowed_operators));
             }
@@ -911,7 +919,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys);
 
         // VALIDASI KEAMANAN: Validasi operator
-        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+        $allowed_operators = self::$ALLOWED_OPERATORS;
         if (!in_array($operator, $allowed_operators)) {
             throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
         }
@@ -973,7 +981,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
     public function or_where_has($relation, $foreignKey, $localKey, $callback = null, $operator = null, $count = null)
     {
         if (is_string($callback)) {
-            $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+            $allowed_operators = self::$ALLOWED_OPERATORS;
             if (!in_array($callback, $allowed_operators, true)) {
                 throw new InvalidArgumentException("Invalid operator: {$callback}. Allowed operators: " . implode(', ', $allowed_operators));
             }
@@ -991,8 +999,25 @@ class CustomQueryBuilder extends CI_DB_query_builder
             return $this->or_where_exists_relation($relation, $foreignKey, $localKey, $callback);
         }
 
+        // VALIDASI KEAMANAN: Validasi relation name
+        if (!$this->is_valid_table_name($relation)) {
+            throw new InvalidArgumentException("Invalid relation name: {$relation}. Only alphanumeric characters and underscores are allowed.");
+        }
+
         $processed_local_keys = $this->process_keys($localKey, 'local key');
         $processed_foreign_keys = $this->process_keys($foreignKey, 'foreign key');
+        $this->validate_key_count_match($processed_foreign_keys, $processed_local_keys);
+
+        // VALIDASI KEAMANAN: Validasi operator
+        $allowed_operators = self::$ALLOWED_OPERATORS;
+        if (!in_array($operator, $allowed_operators)) {
+            throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
+        }
+
+        // VALIDASI KEAMANAN: Validasi count
+        if (!is_numeric($count) || $count < 0) {
+            throw new InvalidArgumentException("Invalid count: {$count}. Count must be a non-negative number.");
+        }
 
         $this->pending_where_has[] = [
             'relation' => $relation,
@@ -1000,7 +1025,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             'local_key' => $processed_local_keys,
             'callback' => $callback,
             'operator' => $operator,
-            'count' => $count,
+            'count' => (int) $count,
             'type' => 'OR',
             '_order' => $this->_capture_call_order()
         ];
@@ -1177,11 +1202,18 @@ class CustomQueryBuilder extends CI_DB_query_builder
     {
         if (empty($this->pending_order_by_relations)) return;
 
+        // Extract alias/name from parent_table (in case it contains "table_name
+        // alias") — every other pending-condition processor does this before
+        // qualifying a bare local key; this one didn't, so a bare local key
+        // combined with an aliased main table (e.g. from('quotation q')) produced
+        // invalid SQL like "quotation q.idmarketing" instead of "q.idmarketing".
+        $parent_table_identifier = $this->extract_table_or_alias($parent_table);
+
         $inserts = [];
         foreach ($this->pending_order_by_relations as $rel) {
             $localKey = strpos($rel['localKey'], '.') !== false
                 ? $rel['localKey']
-                : "{$parent_table}.{$rel['localKey']}";
+                : "{$parent_table_identifier}.{$rel['localKey']}";
             $subquery = "(SELECT {$rel['column']} FROM {$rel['table']} WHERE {$rel['foreignKey']} = {$localKey} LIMIT 1)";
             $inserts[] = [
                 'position' => $rel['position'],
@@ -1977,8 +2009,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         $result = parent::count_all_results('', $reset);
 
-        if (!$reset)
+        if (!$reset) {
             $this->with_relations = $original_relations;
+        } else {
+            // Unlike get_compiled_select()/get(), this method never called
+            // reset_query() (which is what normally clears _temp_table_name),
+            // so it used to leak the table name from this call into whatever
+            // pending relation condition the next call on this same instance
+            // resolved without an explicit from()/get(table).
+            $this->_temp_table_name = null;
+        }
 
         return $result;
     }
@@ -2312,19 +2352,15 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $where_has_config['callback']($subquery);
 
                 // Process any pending operations in subquery recursively
-                // Pass the relation table as context for nested aggregates
-                if (!empty($subquery->pending_where_exists)) {
-                    $subquery->process_pending_where_exists($where_has_config['relation']);
-                }
-                if (!empty($subquery->pending_where_has)) {
-                    $subquery->process_pending_where_has();
-                }
-                if (!empty($subquery->pending_aggregates)) {
-                    $subquery->process_pending_aggregates($where_has_config['relation']);
-                }
+                // Pass the relation table as context for nested aggregates.
+                // $subquery is a single-column `SELECT COUNT(*)` subquery, so any
+                // with_count()/with_sum()/with_calculation() queued here exists only
+                // to feed a paired where_aggregate() alias lookup — skip flushing it
+                // as an extra SELECT column, which would break the COUNT(*) shape.
+                $subquery->flush_pending_relation_state($where_has_config['relation'], false);
             }
 
-            $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>'];
+            $allowed_operators = self::$ALLOWED_OPERATORS;
             $operator = in_array($where_has_config['operator'], $allowed_operators)
                 ? $where_has_config['operator']
                 : '>=';
@@ -2403,21 +2439,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     break;
                 case 'sum':
                     if ($aggregate_config['is_custom_expression']) {
-                        // Replace column references in custom expression with subquery alias
-                        $expression = $aggregate_config['column'];
-                        // Add subquery alias prefix to column names in expression
-                        $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function ($matches) use ($subquery_alias) {
-                            // Skip SQL keywords and functions
-                            $keywords = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT'];
-                            if (in_array(strtoupper($matches[1]), $keywords)) {
-                                return $matches[1];
-                            }
-                            // Check if already has table prefix
-                            if (strpos($matches[0], '.') !== false) {
-                                return $matches[0];
-                            }
-                            return "`{$subquery_alias}`.`{$matches[1]}`";
-                        }, $expression);
+                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "SUM({$expression})";
                     } else {
                         $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
@@ -2426,7 +2448,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     break;
                 case 'avg':
                     if ($aggregate_config['is_custom_expression']) {
-                        $expression = $aggregate_config['column'];
+                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "AVG({$expression})";
                     } else {
                         $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
@@ -2435,7 +2457,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     break;
                 case 'max':
                     if ($aggregate_config['is_custom_expression']) {
-                        $expression = $aggregate_config['column'];
+                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "MAX({$expression})";
                     } else {
                         $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
@@ -2444,7 +2466,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     break;
                 case 'min':
                     if ($aggregate_config['is_custom_expression']) {
-                        $expression = $aggregate_config['column'];
+                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "MIN({$expression})";
                     } else {
                         $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
@@ -2512,16 +2534,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $subquery->qb_from = $original_from;
 
                 // Process any pending operations in subquery recursively
-                // Pass the relation table with alias as context for nested aggregates
-                if (!empty($subquery->pending_where_exists)) {
-                    $subquery->process_pending_where_exists($subquery_alias);
-                }
-                if (!empty($subquery->pending_where_has)) {
-                    $subquery->process_pending_where_has();
-                }
-                if (!empty($subquery->pending_aggregates)) {
-                    $subquery->process_pending_aggregates($subquery_alias);
-                }
+                // Pass the relation table with alias as context for nested aggregates.
+                // $subquery is a single-column `SELECT <agg_func>` subquery here — see
+                // flush_pending_relation_state()'s $flush_select_aggregates doc for why
+                // a nested with_count()/with_sum()/etc. must not add a 2nd SELECT column.
+                $subquery->flush_pending_relation_state($subquery_alias, false);
             }
 
             // Add subquery directly to qb_select array to preserve existing SELECT fields
@@ -2599,18 +2616,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     break;
                 case 'sum':
                     if ($aggregate_config['is_custom_expression']) {
-                        $expression = $aggregate_config['column'];
-                        // Add subquery alias prefix to column names in expression
-                        $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function ($matches) use ($subquery_alias) {
-                            $keywords = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT'];
-                            if (in_array(strtoupper($matches[1]), $keywords)) {
-                                return $matches[1];
-                            }
-                            if (strpos($matches[0], '.') !== false) {
-                                return $matches[0];
-                            }
-                            return "`{$subquery_alias}`.`{$matches[1]}`";
-                        }, $expression);
+                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "SUM({$expression})";
                     } else {
                         $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
@@ -2619,7 +2625,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     break;
                 case 'avg':
                     if ($aggregate_config['is_custom_expression']) {
-                        $expression = $aggregate_config['column'];
+                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "AVG({$expression})";
                     } else {
                         $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
@@ -2628,7 +2634,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     break;
                 case 'max':
                     if ($aggregate_config['is_custom_expression']) {
-                        $expression = $aggregate_config['column'];
+                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "MAX({$expression})";
                     } else {
                         $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
@@ -2637,7 +2643,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     break;
                 case 'min':
                     if ($aggregate_config['is_custom_expression']) {
-                        $expression = $aggregate_config['column'];
+                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                         $aggregate_function = "MIN({$expression})";
                     } else {
                         $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
@@ -2694,16 +2700,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 // Restore original FROM
                 $subquery->qb_from = $original_from;
 
-                // Process any pending operations in subquery recursively
-                if (!empty($subquery->pending_where_exists)) {
-                    $subquery->process_pending_where_exists($subquery_alias);
-                }
-                if (!empty($subquery->pending_where_has)) {
-                    $subquery->process_pending_where_has();
-                }
-                if (!empty($subquery->pending_aggregates)) {
-                    $subquery->process_pending_aggregates($subquery_alias);
-                }
+                // Process any pending operations in subquery recursively.
+                // $subquery is a single-column COALESCE(subquery,0)-style aggregate
+                // subquery here — skip flushing pending_aggregates as a 2nd SELECT column.
+                $subquery->flush_pending_relation_state($subquery_alias, false);
             }
 
             // Build the WHERE condition with subquery
@@ -3006,6 +3006,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
             if (!empty($subquery->pending_where_queue)) {
                 $subquery->process_pending_where_queue($relation_identifier);
             }
+            // Process any other pending relation/aggregate state queued by the callback
+            // (with_count(), where_aggregate(), nested where_has(), join_count(), etc.).
+            // $subquery is a single-column `SELECT 1` EXISTS subquery — skip flushing
+            // pending_aggregates as a 2nd SELECT column, which would break that shape.
+            $subquery->flush_pending_relation_state($relation_identifier, false);
         }
 
         // Get the compiled subquery
@@ -3024,13 +3029,21 @@ class CustomQueryBuilder extends CI_DB_query_builder
      * This method builds and executes the WHERE EXISTS subqueries based on
      * the stored pending WHERE EXISTS operations.
      * 
-     * @param string $parent_table Name of the parent table
+     * @param string|null $parent_table Name of the parent table; defaults to qb_from[0] when omitted
      * @return void
+     * @throws Exception
      */
-    protected function process_pending_where_exists($parent_table)
+    protected function process_pending_where_exists($parent_table = null)
     {
         if (empty($this->pending_where_exists))
             return;
+
+        if ($parent_table === null) {
+            if (empty($this->qb_from)) {
+                throw new Exception('WHERE EXISTS relation conditions require a table to be set. Please call from() method or provide table in get() method.');
+            }
+            $parent_table = $this->qb_from[0];
+        }
 
         // Extract table alias or name from parent_table (in case it contains "table_name alias")
         $parent_table_identifier = $this->extract_table_or_alias($parent_table);
@@ -3083,12 +3096,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 }
                 $exists_config['callback']($subquery);
 
-                // Process any pending WHERE EXISTS operations in the subquery recursively
-                // This allows nested where_exists_relation calls to work properly
-                // Use the relation identifier (alias or table name) for recursive processing
-                if (!empty($subquery->pending_where_exists)) {
-                    $subquery->process_pending_where_exists($relation_identifier);
-                }
+                // Process any pending relation/aggregate state queued by the callback
+                // (nested where_exists_relation(), with_count(), where_aggregate(), etc.)
+                // Use the relation identifier (alias or table name) as context.
+                // $subquery is a single-column `SELECT 1` EXISTS subquery — skip flushing
+                // pending_aggregates as a 2nd SELECT column, which would break that shape.
+                $subquery->flush_pending_relation_state($relation_identifier, false);
             }
 
             // Get the compiled subquery
@@ -3119,6 +3132,124 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Public method to manually process pending WHERE aggregate conditions
+     * This is useful when you need to process where_aggregate()/or_where_aggregate() in callback contexts
+     *
+     * @param string|null $context_table Optional context table to use instead of qb_from
+     * @return $this
+     */
+    public function process_where_aggregates($context_table = null)
+    {
+        $this->process_pending_where_aggregates($context_table);
+        return $this;
+    }
+
+    /**
+     * Public method to manually process pending derived-table JOIN aggregates
+     * This is useful when you need to process join_count()/join_sum()/etc. in callback contexts
+     *
+     * @return $this
+     */
+    public function process_join_aggregates()
+    {
+        $this->process_pending_join_aggregates();
+        return $this;
+    }
+
+    /**
+     * Flush every kind of pending relation/aggregate state that may have been
+     * queued via with()/with_count()/with_sum()/with_avg()/with_min()/with_max()/
+     * with_calculation(), where_aggregate()/or_where_aggregate(),
+     * where_exists_relation()/where_not_exists_relation() (and their or_
+     * variants)/where_has()/or_where_has(), and join_count()/join_sum()/etc.
+     *
+     * Those methods only ever queue their pending_* state on the instance they
+     * were called on — nothing flushes it automatically once a callback that
+     * received that instance returns. Every place in this class that runs a
+     * user-supplied callback against a cloned/wrapped query builder must call
+     * this afterwards, or whatever the callback queued is silently dropped
+     * from the compiled query with no error. Safe to call unconditionally —
+     * each check below is a no-op when that particular queue is empty.
+     *
+     * @param string|null $context_table Table/alias bare local keys should resolve against
+     * @param bool $flush_select_aggregates Whether to flush pending_aggregates (with_count()/
+     *        with_sum()/with_calculation()/etc.) as extra SELECT columns. Pass false when $this
+     *        is itself a single-column scalar subquery (a where_has()/with_sum()/where_exists()
+     *        callback's own subquery, shaped `SELECT COUNT(*)`/`SELECT SUM(x)`/`SELECT 1`) — an
+     *        aggregate call made there exists only to register an alias for a paired
+     *        where_aggregate()/or_where_aggregate() lookup (which already ran synchronously at
+     *        call time, independent of this flush); actually adding it as a second SELECT
+     *        column would turn that single-column subquery into a 2-column one and break the
+     *        comparison it's used in (e.g. MySQL error 1241 "Operand should contain 1 column(s)").
+     * @return $this
+     */
+    /**
+     * Merge pending relation/aggregate state queued on a NestedQueryBuilder wrapper
+     * into this instance's own queues.
+     *
+     * NestedQueryBuilder is a separate class (it wraps a CustomQueryBuilder via
+     * composition, it does not extend it), so it has no access to write these
+     * protected properties directly — PHP's protected visibility only allows
+     * cross-instance access from within a method of the SAME class. This is the
+     * only way NestedQueryBuilder can hand its own queued state over for
+     * flush_pending_relation_state() to process.
+     *
+     * @return $this
+     */
+    public function merge_pending_relation_state(
+        $with_relations = [],
+        $pending_aggregates = [],
+        $pending_where_exists = [],
+        $pending_where_aggregates = [],
+        $pending_join_aggregates = [],
+        $pending_where_has = []
+    ) {
+        if (!empty($with_relations)) {
+            $this->with_relations = array_merge($this->with_relations, $with_relations);
+        }
+        if (!empty($pending_aggregates)) {
+            $this->pending_aggregates = array_merge($this->pending_aggregates, $pending_aggregates);
+        }
+        if (!empty($pending_where_exists)) {
+            $this->pending_where_exists = array_merge($this->pending_where_exists, $pending_where_exists);
+        }
+        if (!empty($pending_where_aggregates)) {
+            $this->pending_where_aggregates = array_merge($this->pending_where_aggregates, $pending_where_aggregates);
+        }
+        if (!empty($pending_join_aggregates)) {
+            $this->pending_join_aggregates = array_merge($this->pending_join_aggregates, $pending_join_aggregates);
+        }
+        if (!empty($pending_where_has)) {
+            $this->pending_where_has = array_merge($this->pending_where_has, $pending_where_has);
+        }
+        return $this;
+    }
+
+    public function flush_pending_relation_state($context_table = null, $flush_select_aggregates = true)
+    {
+        if (!empty($this->pending_where_exists)) {
+            $this->process_pending_where_exists($context_table);
+        }
+        if (!empty($this->pending_where_has)) {
+            $this->process_pending_where_has();
+        }
+        if ($flush_select_aggregates && !empty($this->pending_aggregates)) {
+            $this->process_pending_aggregates($context_table);
+        } else {
+            // Discard rather than leave dangling: the config was already copied into
+            // pending_where_aggregates by where_aggregate() at call time if it was needed.
+            $this->pending_aggregates = [];
+        }
+        if (!empty($this->pending_where_aggregates)) {
+            $this->process_pending_where_aggregates($context_table);
+        }
+        if (!empty($this->pending_join_aggregates)) {
+            $this->process_pending_join_aggregates();
+        }
+        return $this;
+    }
+
+    /**
      * Execute query with eager loading relations
      * 
      * @param string $table Table name (optional)
@@ -3140,6 +3271,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
         }
+
+        // Clear temporary table name — get() (the only caller of this method)
+        // returns early into here without ever reaching its own cleanup line,
+        // so without this, _temp_table_name from an eager-loading get() call
+        // used to leak into whatever the next call on this same instance did.
+        $this->_temp_table_name = null;
 
         $result = parent::get($table, $limit, $offset);
 
@@ -3481,21 +3618,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                             break;
                         case 'sum':
                             if ($aggregate_config['is_custom_expression']) {
-                                // Replace column references in custom expression with subquery alias
-                                $expression = $aggregate_config['column'];
-                                // Add subquery alias prefix to column names in expression
-                                $expression = preg_replace_callback('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', function ($matches) use ($subquery_alias) {
-                                    // Skip SQL keywords and functions
-                                    $keywords = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT'];
-                                    if (in_array(strtoupper($matches[1]), $keywords)) {
-                                        return $matches[1];
-                                    }
-                                    // Check if already has table prefix
-                                    if (strpos($matches[0], '.') !== false) {
-                                        return $matches[0];
-                                    }
-                                    return "`{$subquery_alias}`.`{$matches[1]}`";
-                                }, $expression);
+                                $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
                                 $aggregate_function = "SUM({$expression})";
                             } else {
                                 $column = $relation_builder->db->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
@@ -3504,8 +3627,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
                             break;
                         case 'avg':
                             if ($aggregate_config['is_custom_expression']) {
-                                $column = $aggregate_config['column'];
-                                $aggregate_function = "AVG({$column})";
+                                $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
+                                $aggregate_function = "AVG({$expression})";
                             } else {
                                 $column = $relation_builder->db->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
                                 $aggregate_function = "AVG($column)";
@@ -3513,8 +3636,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
                             break;
                         case 'max':
                             if ($aggregate_config['is_custom_expression']) {
-                                $column = $aggregate_config['column'];
-                                $aggregate_function = "MAX({$column})";
+                                $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
+                                $aggregate_function = "MAX({$expression})";
                             } else {
                                 $column = $relation_builder->db->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
                                 $aggregate_function = "MAX($column)";
@@ -3522,8 +3645,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
                             break;
                         case 'min':
                             if ($aggregate_config['is_custom_expression']) {
-                                $column = $aggregate_config['column'];
-                                $aggregate_function = "MIN({$column})";
+                                $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
+                                $aggregate_function = "MIN({$expression})";
                             } else {
                                 $column = $relation_builder->db->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
                                 $aggregate_function = "MIN($column)";
@@ -3589,6 +3712,15 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $result_alias = $this->extract_table_or_alias($aggregate_config['alias']);
                     $relation_builder->db->select("($compiled_subquery) as {$result_alias}", false);
                 }
+            }
+
+            // Process pending WHERE HAS conditions from NestedQueryBuilder
+            if (!empty($relation_builder->pending_where_has)) {
+                // Transfer pending_where_has to base_db for processing
+                $relation_builder->db->pending_where_has = $relation_builder->pending_where_has;
+                $relation_builder->db->process_pending_where_has();
+                // Clear the pending operations
+                $relation_builder->pending_where_has = [];
             }
 
             // Process pending WHERE aggregates from NestedQueryBuilder

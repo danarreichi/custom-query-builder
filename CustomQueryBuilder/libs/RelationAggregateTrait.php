@@ -1226,7 +1226,7 @@ trait RelationAggregateTrait
         }
 
         // Validate operator
-        $allowed_operators = ['=', '>', '<', '>=', '<=', '!=', '<>', 'BETWEEN', 'NOT BETWEEN'];
+        $allowed_operators = array_merge(self::$ALLOWED_OPERATORS, ['BETWEEN', 'NOT BETWEEN']);
         if (!in_array($operator, $allowed_operators)) {
             throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
         }
@@ -1321,8 +1321,12 @@ trait RelationAggregateTrait
         // VALIDASI KEAMANAN: validate the FULL relation string directly — this
         // previously validated only extract_table_name($relation) (the first
         // whitespace token) while storing/using the full $relation string, letting
-        // anything after the first space through unchecked.
-        if (!$this->is_valid_table_name($relation)) {
+        // anything after the first space through unchecked. Use is_valid_relation_string()
+        // rather than is_valid_table_name() so the documented "table alias" /
+        // "table AS alias" syntax (see docblocks below) actually validates —
+        // is_valid_table_name() rejects any whitespace at all, which made every
+        // aliased $relation throw despite being the advertised usage.
+        if (!$this->is_valid_relation_string($relation)) {
             throw new InvalidArgumentException("Invalid relation table name: {$relation}");
         }
 

@@ -328,7 +328,14 @@ trait QueryValidationTrait
      */
     protected function has_only_allowed_function_calls($expression, $extra_allowed = [])
     {
-        if (!preg_match_all('/([A-Za-z_][A-Za-z0-9_]*)\s*\(/', $expression, $matches))
+        // Allow an optional backtick immediately around the identifier (e.g.
+        // `SLEEP`(5)) so a quoted identifier can't dodge detection here — MySQL
+        // treats a backtick-quoted name immediately followed by `(` as a valid
+        // function call, same as an unquoted one. Without the backtick in the
+        // pattern, `SLEEP`(5) was invisible to this check entirely (no match),
+        // then the tokenizer below stripped the backticks and let "SLEEP"
+        // through as if it were a harmless bare column reference.
+        if (!preg_match_all('/`?([A-Za-z_][A-Za-z0-9_]*)`?\s*\(/', $expression, $matches))
             return true;
 
         foreach ($matches[1] as $name) {
@@ -604,5 +611,64 @@ trait QueryValidationTrait
             return '`' . $tbl . '`.`' . $col . '`';
         }
         return '`' . $relation_ref . '`.`' . $column . '`';
+    }
+
+    /**
+     * Prefix bare (unqualified) identifiers in a validated custom aggregate
+     * expression with the subquery alias, so the expression resolves against
+     * the correlated subquery's own table instead of leaking out to whatever
+     * table happens to be in scope outside it.
+     *
+     * Skips: SQL keywords/functions, identifiers already qualified with a dot
+     * ("table.col"), and identifiers already backtick-quoted ("`col`").
+     *
+     * BUG FIX: this used to be done with a regex callback that tested
+     * `strpos($matches[0], '.') !== false` to detect an already-qualified
+     * identifier — but $matches[0] is only ever the identifier itself (the
+     * pattern never includes the dot), so that check could never be true.
+     * A custom expression like "scores.value" got EVERY bare identifier
+     * prefixed independently, producing invalid double-qualified SQL like
+     * "`sub`.`scores`.`sub`.`value`". The same blind-spot let a backtick-
+     * quoted column get double-backtick-mangled the same way.
+     *
+     * @param string $expression   Already-validated custom expression
+     * @param string $subquery_alias Alias to prefix bare identifiers with
+     * @return string
+     */
+    protected function _prefix_bare_identifiers($expression, $subquery_alias)
+    {
+        $keywords = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT'];
+
+        if (!preg_match_all('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', $expression, $matches, PREG_OFFSET_CAPTURE))
+            return $expression;
+
+        $result = '';
+        $cursor = 0;
+        foreach ($matches[1] as $match) {
+            list($identifier, $offset) = $match;
+            $result .= substr($expression, $cursor, $offset - $cursor);
+
+            $prev_char = $offset > 0 ? $expression[$offset - 1] : '';
+            $after_offset = $offset + strlen($identifier);
+            $next_char = isset($expression[$after_offset]) ? $expression[$after_offset] : '';
+
+            if (
+                in_array(strtoupper($identifier), $keywords)
+                || $prev_char === '.' || $next_char === '.'
+                || $prev_char === '`' || $next_char === '`'
+            ) {
+                // Already dotted (this identifier is either the "table" or the
+                // "col" half of "table.col") or already backtick-quoted — leave
+                // it exactly as-is instead of prefixing.
+                $result .= $identifier;
+            } else {
+                $result .= "`{$subquery_alias}`.`{$identifier}`";
+            }
+
+            $cursor = $after_offset;
+        }
+        $result .= substr($expression, $cursor);
+
+        return $result;
     }
 }
