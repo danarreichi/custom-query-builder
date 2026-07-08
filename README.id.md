@@ -45,7 +45,9 @@ proyek-anda/
 ├── application/
 ├── system/
 │   ├── core/
-│   │   ├── CustomQueryBuilder.php    ← salin ke sini
+│   │   ├── CustomQueryBuilder/        ← salin seluruh folder ini ke sini
+│   │   │   ├── main.php
+│   │   │   └── libs/
 │   │   ├── CodeIgniter.php
 │   │   └── ...
 │   └── database/
@@ -76,7 +78,7 @@ require_once(BASEPATH.'database/DB_driver.php');
 if ( ! isset($query_builder) OR $query_builder === TRUE)
 {
     require_once(BASEPATH.'database/DB_query_builder.php');
-    require_once(BASEPATH.'core/CustomQueryBuilder.php');
+    require_once(BASEPATH.'core/CustomQueryBuilder/main.php');
     if ( ! class_exists('CI_DB', FALSE))
     {
         class CI_DB extends CustomQueryBuilder { }
@@ -84,7 +86,7 @@ if ( ! isset($query_builder) OR $query_builder === TRUE)
 }
 ```
 
-> `CustomQueryBuilder.php` sudah melakukan `require_once(BASEPATH.'database/DB_query_builder.php')`-nya sendiri secara internal, jadi `require_once` untuk file ini aman ditaruh di mana saja dalam blok ini — PHP tidak akan memuat class induk dua kali baik bagaimana pun urutannya.
+> `main.php` sudah melakukan `require_once(BASEPATH.'database/DB_query_builder.php')`-nya sendiri secara internal, jadi `require_once` untuk file ini aman ditaruh di mana saja dalam blok ini — PHP tidak akan memuat class induk dua kali baik bagaimana pun urutannya.
 
 ### Langkah 3: Bersihkan cache
 
@@ -110,7 +112,7 @@ class Test_custom_qb extends CI_Controller
 
 | Gejala | Penyebab | Solusi |
 |---|---|---|
-| `Class 'CustomQueryBuilder' not found` | File belum ada atau belum di-require | Pastikan `system/core/CustomQueryBuilder.php` ada dan baris `require_once` di Langkah 2 sudah ditambahkan |
+| `Class 'CustomQueryBuilder' not found` | File belum ada atau belum di-require | Pastikan `system/core/CustomQueryBuilder/main.php` ada dan baris `require_once` di Langkah 2 sudah ditambahkan |
 | `Call to undefined method CI_DB::with_one()` | `CI_DB` masih extends `CI_DB_query_builder` | Cek ulang Langkah 2, lalu bersihkan OPcache |
 | Tidak ada perubahan setelah edit | OPcache masih menyajikan bytecode lama | `php -r "opcache_reset();"` atau restart PHP |
 
@@ -711,6 +713,6 @@ foreach ($data as $user) {
 
 ## Informasi Versi
 
-- **File**: `system/core/CustomQueryBuilder.php`
+- **File**: `system/core/CustomQueryBuilder/main.php`
 - **Framework**: CodeIgniter 3.x
 - **PHP**: 5.6+

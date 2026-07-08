@@ -38,14 +38,16 @@ A drop-in, backward-compatible extension of CodeIgniter 3's Query Builder that a
 - Access to modify system core files
 - Database configured and operational
 
-### Step 1: Copy the file
+### Step 1: Copy the files
 
 ```
 your-project/
 ├── application/
 ├── system/
 │   ├── core/
-│   │   ├── CustomQueryBuilder.php    ← copy here
+│   │   ├── CustomQueryBuilder/        ← copy this whole folder here
+│   │   │   ├── main.php
+│   │   │   └── libs/
 │   │   ├── CodeIgniter.php
 │   │   └── ...
 │   └── database/
@@ -76,7 +78,7 @@ require_once(BASEPATH.'database/DB_driver.php');
 if ( ! isset($query_builder) OR $query_builder === TRUE)
 {
     require_once(BASEPATH.'database/DB_query_builder.php');
-    require_once(BASEPATH.'core/CustomQueryBuilder.php');
+    require_once(BASEPATH.'core/CustomQueryBuilder/main.php');
     if ( ! class_exists('CI_DB', FALSE))
     {
         class CI_DB extends CustomQueryBuilder { }
@@ -84,7 +86,7 @@ if ( ! isset($query_builder) OR $query_builder === TRUE)
 }
 ```
 
-> `CustomQueryBuilder.php` already does its own `require_once(BASEPATH.'database/DB_query_builder.php')` internally, so the `require_once` for it is safe to place anywhere in this block — PHP won't load the parent class twice either way.
+> `main.php` already does its own `require_once(BASEPATH.'database/DB_query_builder.php')` internally, so the `require_once` for it is safe to place anywhere in this block — PHP won't load the parent class twice either way.
 
 ### Step 3: Clear cache
 
@@ -110,7 +112,7 @@ class Test_custom_qb extends CI_Controller
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Class 'CustomQueryBuilder' not found` | File missing or not required | Verify `system/core/CustomQueryBuilder.php` exists and Step 2's `require_once` line is present |
+| `Class 'CustomQueryBuilder' not found` | File missing or not required | Verify `system/core/CustomQueryBuilder/main.php` exists and Step 2's `require_once` line is present |
 | `Call to undefined method CI_DB::with_one()` | `CI_DB` still extends `CI_DB_query_builder` | Re-check Step 2, then clear OPcache |
 | Nothing changed after editing | OPcache serving stale bytecode | `php -r "opcache_reset();"` or restart PHP |
 
@@ -711,6 +713,6 @@ foreach ($data as $user) {
 
 ## Version Information
 
-- **File**: `system/core/CustomQueryBuilder.php`
+- **File**: `system/core/CustomQueryBuilder/main.php`
 - **Framework**: CodeIgniter 3.x
 - **PHP**: 5.6+

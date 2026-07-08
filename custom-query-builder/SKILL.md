@@ -1,6 +1,6 @@
 ---
 name: custom-query-builder
-description: Advanced CodeIgniter 3.x query builder with eager loading, aggregations, and relation support for the Liteprint multi-tenant platform. Use when building database queries that need: eager loading relationships (with_one, with_many), aggregations (with_sum, with_count, with_avg), advanced WHERE conditions (where_exists, where_has), complex filtering with domain/outlet isolation, or any query going beyond basic CodeIgniter Query Builder capabilities. Located in system/core/CustomQueryBuilder.php.
+description: Advanced CodeIgniter 3.x query builder with eager loading, aggregations, and relation support for the Liteprint multi-tenant platform. Use when building database queries that need: eager loading relationships (with_one, with_many), aggregations (with_sum, with_count, with_avg), advanced WHERE conditions (where_exists, where_has), complex filtering with domain/outlet isolation, or any query going beyond basic CodeIgniter Query Builder capabilities. Located in system/core/CustomQueryBuilder/main.php.
 license: Complete terms in LICENSE.txt
 ---
 
