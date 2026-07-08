@@ -1595,11 +1595,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Resolve main table alias for ON condition
         $mainTable = $this->qb_from[0];
-        if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $mainTable, $m)) {
-            $main_alias = isset($m[2]) && $m[2] !== '' ? $m[2] : $m[1];
-        } else {
-            $main_alias = trim(str_replace('`', '', $mainTable));
-        }
+        $main_alias = $this->extract_table_or_alias($mainTable);
 
         foreach ($pending as $config) {
             $relation = $config['relation'];
@@ -2377,8 +2373,58 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Build the SQL aggregate function expression (COUNT(*), SUM(...), etc.) for a
+     * pending aggregate config.
+     *
+     * Centralizes a switch-case that used to be duplicated three times —
+     * process_pending_aggregates(), process_pending_where_aggregates(), and the
+     * nested-aggregate path inside load_single_relation() (with_count()/with_sum()/
+     * etc. called INSIDE a with_one()/with_many() relation callback) — and had
+     * drifted out of sync between copies. In particular, the nested-aggregate copy
+     * used to build the non-custom-expression column reference as
+     * protect_identifiers("{$subquery_alias}.{$column}") directly instead of going
+     * through _quote_agg_column() like its two siblings: a column that already
+     * carried its own table qualifier (e.g. 'other_table.value') produced invalid
+     * double-qualified SQL there (`sub`.`other_table`.`value`) instead of correctly
+     * using the column's own qualifier. Routing all three call sites through this
+     * one method means that class of divergence can't recur.
+     *
+     * @param string $type Aggregate type: count|sum|avg|max|min|custom|custom_calculation
+     *        ('custom' and 'custom_calculation' are synonyms — pending_aggregates
+     *        uses 'custom_calculation', pending_where_aggregates uses 'custom'; see
+     *        add_where_calculated()'s $type_mapping for why the two queues disagree).
+     * @param string|null $column Column name or already-validated custom SQL expression (null for count)
+     * @param bool $is_custom_expression Whether $column is a custom SQL expression rather than a bare column name
+     * @param string $subquery_alias Table/subquery alias to qualify a bare column with
+     * @return string Compiled SQL aggregate function expression
+     */
+    protected function _build_aggregate_function($type, $column, $is_custom_expression, $subquery_alias)
+    {
+        switch ($type) {
+            case 'count':
+                return 'COUNT(*)';
+            case 'sum':
+            case 'avg':
+            case 'max':
+            case 'min':
+                $sql_func = strtoupper($type);
+                if ($is_custom_expression) {
+                    $expression = $this->_prefix_bare_identifiers($column, $subquery_alias);
+                    return "{$sql_func}({$expression})";
+                }
+                return "{$sql_func}(" . $this->_quote_agg_column($column, $subquery_alias) . ")";
+            case 'custom_calculation':
+            case 'custom':
+                // Raw expression, already validated by the caller (e.g. "SUM(a) / SUM(b) * 100")
+                return $column;
+            default:
+                return '';
+        }
+    }
+
+    /**
      * Process pending aggregate functions by adding them as subqueries in SELECT
-     * 
+     *
      * @param string|null $context_table Optional context table to use instead of main table (for nested callbacks)
      * @return void
      * @throws Exception
@@ -2404,17 +2450,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Use context_table if provided (for nested callbacks), otherwise use qb_from
         $mainTable = $context_table ? $context_table : $this->qb_from[0];
 
-        // Extract table name and alias from FROM clause
-        $main_table_name = '';
-        $main_table_alias = '';
-
-        if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $mainTable, $matches)) {
-            $main_table_name = $matches[1];
-            $main_table_alias = isset($matches[2]) ? $matches[2] : $main_table_name;
-        } else {
-            $main_table_name = $mainTable;
-            $main_table_alias = $mainTable;
-        }
+        // Extract table alias from FROM clause
+        $main_table_alias = $this->extract_table_or_alias($mainTable);
 
         foreach ($pending_operations as $aggregate_config) {
             $subquery = clone $this;
@@ -2431,52 +2468,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $is_subquery_relation = ltrim($aggregate_config['relation'])[0] === '(';
 
             // Build aggregate function based on type
-            $aggregate_function = '';
-
-            switch ($aggregate_config['type']) {
-                case 'count':
-                    $aggregate_function = 'COUNT(*)';
-                    break;
-                case 'sum':
-                    if ($aggregate_config['is_custom_expression']) {
-                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "SUM({$expression})";
-                    } else {
-                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "SUM($column)";
-                    }
-                    break;
-                case 'avg':
-                    if ($aggregate_config['is_custom_expression']) {
-                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "AVG({$expression})";
-                    } else {
-                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "AVG($column)";
-                    }
-                    break;
-                case 'max':
-                    if ($aggregate_config['is_custom_expression']) {
-                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "MAX({$expression})";
-                    } else {
-                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "MAX($column)";
-                    }
-                    break;
-                case 'min':
-                    if ($aggregate_config['is_custom_expression']) {
-                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "MIN({$expression})";
-                    } else {
-                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "MIN($column)";
-                    }
-                    break;
-                case 'custom_calculation':
-                    $aggregate_function = $aggregate_config['column'];
-                    break;
-            }
+            $aggregate_function = $this->_build_aggregate_function(
+                $aggregate_config['type'],
+                $aggregate_config['column'],
+                $aggregate_config['is_custom_expression'],
+                $subquery_alias
+            );
 
             // Use table alias in FROM clause for subquery
             $subquery->select($aggregate_function);
@@ -2581,17 +2578,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Use context_table if provided, otherwise use qb_from
         $mainTable = $context_table ? $context_table : $this->qb_from[0];
 
-        // Extract table name and alias from FROM clause
-        $main_table_name = '';
-        $main_table_alias = '';
-
-        if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $mainTable, $matches)) {
-            $main_table_name = $matches[1];
-            $main_table_alias = isset($matches[2]) ? $matches[2] : $main_table_name;
-        } else {
-            $main_table_name = $mainTable;
-            $main_table_alias = $mainTable;
-        }
+        // Extract table alias from FROM clause
+        $main_table_alias = $this->extract_table_or_alias($mainTable);
 
         foreach ($pending_operations as $aggregate_config) {
             $subquery = clone $this;
@@ -2608,52 +2596,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $is_subquery_relation = ltrim($aggregate_config['relation'])[0] === '(';
 
             // Build aggregate function based on type
-            $aggregate_function = '';
-
-            switch ($aggregate_config['type']) {
-                case 'count':
-                    $aggregate_function = 'COUNT(*)';
-                    break;
-                case 'sum':
-                    if ($aggregate_config['is_custom_expression']) {
-                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "SUM({$expression})";
-                    } else {
-                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "SUM($column)";
-                    }
-                    break;
-                case 'avg':
-                    if ($aggregate_config['is_custom_expression']) {
-                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "AVG({$expression})";
-                    } else {
-                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "AVG($column)";
-                    }
-                    break;
-                case 'max':
-                    if ($aggregate_config['is_custom_expression']) {
-                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "MAX({$expression})";
-                    } else {
-                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "MAX($column)";
-                    }
-                    break;
-                case 'min':
-                    if ($aggregate_config['is_custom_expression']) {
-                        $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "MIN({$expression})";
-                    } else {
-                        $column = $this->_quote_agg_column($aggregate_config['column'], $subquery_alias);
-                        $aggregate_function = "MIN($column)";
-                    }
-                    break;
-                case 'custom':
-                    $aggregate_function = $aggregate_config['column'];
-                    break;
-            }
+            $aggregate_function = $this->_build_aggregate_function(
+                $aggregate_config['type'],
+                $aggregate_config['column'],
+                $aggregate_config['is_custom_expression'],
+                $subquery_alias
+            );
 
             // Use table alias in FROM clause for subquery
             $subquery->select($aggregate_function);
@@ -3351,19 +3299,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
             }
         }
 
-        // Get main table info (with potential alias)
-        $main_table = '';
+        // Get main table alias (with potential alias)
         $table_alias = '';
         if (!empty($this->qb_from)) {
             $from_clause = $this->qb_from[0];
-            // Check if there's an alias (e.g., "transaction t" or "transaction as t")
-            if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $from_clause, $matches)) {
-                $main_table = $matches[1];
-                $table_alias = isset($matches[2]) ? $matches[2] : $main_table;
-            } else {
-                $main_table = $from_clause;
-                $table_alias = $main_table;
-            }
+            $table_alias = $this->extract_table_or_alias($from_clause);
         }
 
         foreach ($required_keys as $key) {
@@ -3610,56 +3550,33 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     // Format: tablename_sub (e.g., transaction_detail_sub)
                     $subquery_alias = $relation_table_name;
 
+                    // Detect whether the relation is a raw SQL subquery (e.g. "(SELECT ...) alias").
+                    // BUG FIX: this nested-aggregate path (with_count()/with_sum()/etc. called
+                    // inside a with_one()/with_many() relation callback) previously never checked
+                    // this, unlike its top-level counterpart process_pending_aggregates() — a raw
+                    // subquery relation here fell through to extract_table_name()'s naive
+                    // explode(' ', ...)[0], which mangles "(SELECT col FROM t) alias" into the
+                    // broken token "(SELECT", producing an invalid FROM clause below.
+                    $is_subquery_relation = ltrim($aggregate_config['relation'])[0] === '(';
+
                     // Build aggregate function based on type
-                    $aggregate_function = '';
-                    switch ($aggregate_config['type']) {
-                        case 'count':
-                            $aggregate_function = 'COUNT(*)';
-                            break;
-                        case 'sum':
-                            if ($aggregate_config['is_custom_expression']) {
-                                $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                                $aggregate_function = "SUM({$expression})";
-                            } else {
-                                $column = $relation_builder->db->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
-                                $aggregate_function = "SUM($column)";
-                            }
-                            break;
-                        case 'avg':
-                            if ($aggregate_config['is_custom_expression']) {
-                                $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                                $aggregate_function = "AVG({$expression})";
-                            } else {
-                                $column = $relation_builder->db->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
-                                $aggregate_function = "AVG($column)";
-                            }
-                            break;
-                        case 'max':
-                            if ($aggregate_config['is_custom_expression']) {
-                                $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                                $aggregate_function = "MAX({$expression})";
-                            } else {
-                                $column = $relation_builder->db->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
-                                $aggregate_function = "MAX($column)";
-                            }
-                            break;
-                        case 'min':
-                            if ($aggregate_config['is_custom_expression']) {
-                                $expression = $this->_prefix_bare_identifiers($aggregate_config['column'], $subquery_alias);
-                                $aggregate_function = "MIN({$expression})";
-                            } else {
-                                $column = $relation_builder->db->protect_identifiers($subquery_alias . '.' . $aggregate_config['column'], true);
-                                $aggregate_function = "MIN($column)";
-                            }
-                            break;
-                        case 'custom_calculation':
-                            $aggregate_function = $aggregate_config['column'];
-                            break;
-                    }
+                    $aggregate_function = $this->_build_aggregate_function(
+                        $aggregate_config['type'],
+                        $aggregate_config['column'],
+                        $aggregate_config['is_custom_expression'],
+                        $subquery_alias
+                    );
 
                     // Use table alias in FROM clause for subquery
-                    $subquery->select($aggregate_function)
-                        ->from($table_name . ' ' . $subquery_alias);
+                    $subquery->select($aggregate_function);
+                    if ($is_subquery_relation) {
+                        // Raw subquery: directly assign to qb_from to prevent CI from
+                        // backtick-escaping it. The relation string is already well-formed,
+                        // e.g. "(SELECT ...) transaction_sub".
+                        $subquery->qb_from[] = $aggregate_config['relation'];
+                    } else {
+                        $subquery->from($table_name . ' ' . $subquery_alias);
+                    }
 
                     $aggregate_foreign_keys = $aggregate_config['foreign_key'];
                     $aggregate_local_keys = $aggregate_config['local_key'];
@@ -3915,27 +3832,26 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 }
             }
 
+            // BUG FIX: this used to guess "is this relation actually an aggregate
+            // result?" purely from whether $config['alias'] happened to END IN
+            // "_count"/"_sum"/"_avg"/"_max"/"_min" (e.g. an alias the caller chose
+            // for an ordinary with_one()/with_many() relation, like 'top_score_sum').
+            // load_single_relation() only ever runs for with()/with_one()/with_many()
+            // configs — with_count()/with_sum()/etc. (top-level AND nested inside a
+            // relation callback) are compiled as SELECT subquery columns elsewhere and
+            // never reach this matching code, so there is no legitimate case here
+            // where $relation_data is actually a {'value': ...} wrapper to unwrap.
+            // The guess produced two kinds of silent corruption: a real relation row
+            // that happened to have a column literally named "value" (e.g. the alias
+            // 'top_score_sum' matching a scores row {id, user_id, value}) got collapsed
+            // down to that bare scalar, discarding the rest of the row; and a genuinely
+            // unmatched with_one() relation aliased e.g. 'top_score_count' silently
+            // renamed itself to 'top_score' and defaulted to 0 instead of the documented
+            // with_one() no-match default of null. Always use $config['alias'] as-is.
             if (isset($grouped_relations[$local_value])) {
-                $relation_data = $grouped_relations[$local_value];
-                $is_aggregation = preg_match('/_(count|sum|avg|max|min)$/', $config['alias']);
-
-                if ($is_aggregation && is_array($relation_data) && isset($relation_data['value'])) {
-                    $new_alias = preg_replace('/_(count|sum|avg|max|min)$/', '', $config['alias']);
-                    $item[$new_alias] = $relation_data['value'];
-                } else if ($is_aggregation && is_object($relation_data) && isset($relation_data->value)) {
-                    $new_alias = preg_replace('/_(count|sum|avg|max|min)$/', '', $config['alias']);
-                    $item[$new_alias] = $relation_data->value;
-                } else {
-                    $item[$config['alias']] = $relation_data;
-                }
+                $item[$config['alias']] = $grouped_relations[$local_value];
             } else {
-                $is_aggregation = preg_match('/_(count|sum|avg|max|min)$/', $config['alias']);
-                if ($is_aggregation) {
-                    $new_alias = preg_replace('/_(count|sum|avg|max|min)$/', '', $config['alias']);
-                    $item[$new_alias] = preg_match('/_count$/', $config['alias']) ? 0 : null;
-                } else {
-                    $item[$config['alias']] = $config['multiple'] ? [] : null;
-                }
+                $item[$config['alias']] = $config['multiple'] ? [] : null;
             }
         }
 
@@ -4045,12 +3961,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Resolve relation table alias for column qualification
         $table_alias = '';
         if (!empty($relation_builder->db->qb_from)) {
-            $from_clause = $relation_builder->db->qb_from[0];
-            if (preg_match('/^`?(\w+)`?(?:\s+(?:as\s+)?`?(\w+)`?)?$/i', $from_clause, $tbl_matches)) {
-                $table_alias = isset($tbl_matches[2]) && $tbl_matches[2] !== '' ? $tbl_matches[2] : $tbl_matches[1];
-            } else {
-                $table_alias = $from_clause;
-            }
+            $table_alias = $this->extract_table_or_alias($relation_builder->db->qb_from[0]);
         }
 
         foreach ($required_keys as $key) {
@@ -4276,34 +4187,57 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
-     * Override query() method to support eager loading with custom SQL
-     * 
-     * This override allows you to use with_one(), with_many(), with_sum(), etc. with custom queries.
-     * If no with_relations or pending_aggregates are defined, it behaves exactly like the parent query() method.
-     * 
+     * Override query() method to support eager loading with custom raw SQL
+     *
+     * This override lets you use with_one()/with_many() (and relations nested inside
+     * their callbacks, e.g. with_count()/with_sum() called INSIDE a with_many()
+     * callback) with a raw SQL string. with_relations works here because it is
+     * always resolved as a completely separate follow-up query — the relation rows
+     * are fetched on their own and matched back onto $data in PHP, so it doesn't
+     * matter that the main query's SQL was handed in as a fixed string.
+     *
+     * NOT supported here — and impossible to support without changing how they
+     * work: with_count()/with_sum()/with_avg()/with_min()/with_max()/with_calculation()
+     * called at the TOP LEVEL (not nested inside a with_one()/with_many() callback),
+     * where_has()/where_exists_relation()/where_aggregate(), and join_count()/join_sum()/etc.
+     * All of these work by splicing an extra SELECT column or WHERE/JOIN fragment into
+     * *this* query's own qb_select/qb_where/qb_join *before* it is compiled and run.
+     * By the time this method runs, $sql has already been executed as-is by
+     * parent::query() above — there is no SELECT/WHERE clause left to splice
+     * anything into. If any of those were queued before calling query(), that queued
+     * state is silently discarded below (not applied, and not left to leak into
+     * whatever get()/query() call comes next on this same instance) rather than
+     * silently doing nothing while still being carried forward.
+     *
+     * If no with_relations are queued, this behaves exactly like the parent query() method.
+     *
      * Example:
      * // Without relations - works like normal query()
      * $query = $this->db->query("SELECT * FROM users");
      * $users = $query->result();
-     * 
+     *
      * // With relations - automatically processes eager loading
      * $this->db->with_one('marketing_spk', 'idmarketing_spk', 'idmarketing_spk');
      * $query = $this->db->query("SELECT * FROM transaction WHERE status = 1");
      * $data = $query->result(); // Relations are loaded automatically
-     * 
-     * // With aggregates
+     *
+     * // Relations nested inside a with_many()/with_one() callback also work,
+     * // since the whole relation (including its own nested aggregates) is still
+     * // resolved as a separate follow-up query:
+     * $this->db->with_many('posts', 'user_id', 'id', function ($q) {
+     *     $q->with_count('comments', 'post_id', 'id');
+     * });
+     * $query = $this->db->query("SELECT * FROM users");
+     * $users = $query->result(); // each post has ->comments_count
+     *
+     * // NOT supported: top-level with_sum()/with_count()/where_has()/join_sum()/etc.
+     * // are silently ignored (their queued state is discarded, not applied) when
+     * // combined with a raw query() call — use get()/get_compiled_select() instead
+     * // if you need those.
      * $this->db->with_sum(['marketing_spk' => 'jobsum'], 'idmarketing_spk', 'idmarketing_spk', 'total_job');
      * $query = $this->db->query("SELECT * FROM transaction WHERE status = 1");
-     * $data = $query->result(); // Each row will have ->jobsum
-     * 
-     * // Multiple relations and aggregates
-     * $this->db->with_one('profile', 'user_id', 'id')
-     *          ->with_many('posts', 'user_id', 'id')
-     *          ->with_count('comments', 'user_id', 'id')
-     *          ->with_sum('orders', 'user_id', 'id', 'total_amount');
-     * $query = $this->db->query("SELECT * FROM users");
-     * $users = $query->result();
-     * 
+     * $data = $query->result(); // rows will NOT have ->jobsum
+     *
      * @param string $sql SQL query string
      * @param mixed $binds Query bindings (optional)
      * @param bool $return_object Whether to return as object (default: true for backwards compatibility)
@@ -4316,6 +4250,24 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         // Check if we need to process relations
         $has_relations = !empty($this->with_relations);
+
+        // BUG FIX: none of these pending_* queues can ever be applied to a raw SQL
+        // string that parent::query() has already executed by this point (see the
+        // docblock above for why) — only with_relations (handled below) can. They
+        // used to be left untouched here, so anything queued via with_sum()/
+        // where_has()/where_exists_relation()/where_aggregate()/join_sum()/etc.
+        // before calling query() silently never applied to THIS call, AND stayed
+        // queued afterwards — leaking into and corrupting whatever unrelated
+        // get()/query() call came next on this same instance. Clear all of them
+        // unconditionally so nothing survives past this call either way.
+        $this->pending_aggregates = [];
+        $this->pending_where_has = [];
+        $this->pending_where_exists = [];
+        $this->pending_where_aggregates = [];
+        $this->pending_join_aggregates = [];
+        $this->pending_groups = [];
+        $this->pending_where_queue = [];
+        $this->pending_order_by_relations = [];
 
         if (!$has_relations) {
             // Wrap SELECT results so ->key_by() etc. are available. Write queries
