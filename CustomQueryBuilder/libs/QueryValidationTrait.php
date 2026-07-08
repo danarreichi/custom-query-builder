@@ -18,7 +18,11 @@ trait QueryValidationTrait
      * @var array
      */
     protected static $DANGEROUS_SQL_PATTERNS = [
-        '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
+        // BUG FIX: HAVING was missing here, so is_valid_column_name()'s bare-token
+        // fallback in is_valid_custom_expression() let it through as an "assumed
+        // column name" (e.g. "1 HAVING 1=1"), unlike is_valid_calculation_expression()'s
+        // separate $dangerous_keywords list, which already blocked it explicitly.
+        '/\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|OR|AND|WHERE|HAVING|FROM|JOIN|INTO|VALUES|SET|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE)\b/i',
         '/[;]/',        // Dash character blocked
         '/--/',             // SQL comment pattern
         '/\/\*/',           // Multi-line comment start
@@ -657,7 +661,14 @@ trait QueryValidationTrait
      */
     protected function _prefix_bare_identifiers($expression, $subquery_alias)
     {
-        $keywords = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT'];
+        // BUG FIX: this used to hardcode a small local $keywords list (SUM, AVG,
+        // COUNT, MAX, MIN, CASE, WHEN, THEN, ELSE, END, AND, OR, NOT) instead of
+        // reusing self::$ALLOWED_SQL_FUNCTIONS. Any other whitelisted function
+        // name (ROUND, FLOOR, COALESCE, CONCAT, ...) fell through to the "bare
+        // column" branch and got wrongly qualified, e.g. ROUND(price, 2) became
+        // `sub`.`ROUND`(price, 2) — invalid SQL for an otherwise valid, validated
+        // custom expression.
+        $keywords = self::$ALLOWED_SQL_FUNCTIONS;
 
         if (!preg_match_all('/\b([a-zA-Z_][a-zA-Z0-9_]*)\b/', $expression, $matches, PREG_OFFSET_CAPTURE))
             return $expression;

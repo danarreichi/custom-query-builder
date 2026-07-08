@@ -665,7 +665,14 @@ trait RelationAggregateTrait
     protected function add_join_aggregate($type, $relation, $foreignKey, $localKey, $column = null, $alias = null, $callback = null)
     {
         // Detect raw SQL subquery passed as relation (e.g. "(SELECT ...) alias")
-        $is_subquery_relation = ltrim($relation)[0] === '(';
+        // BUG FIX: an empty/all-whitespace $relation made ltrim($relation)[0] an
+        // undefined-offset access before the "invalid table name" check below ever
+        // ran. Guard the empty case first so it throws a clean InvalidArgumentException.
+        $trimmed_relation = ltrim(is_string($relation) ? $relation : '');
+        if ($trimmed_relation === '') {
+            throw new InvalidArgumentException("join_{$type}: relation cannot be empty.");
+        }
+        $is_subquery_relation = $trimmed_relation[0] === '(';
 
         // VALIDASI KEAMANAN: previously validated only extract_table_name($relation)
         // (the first whitespace token) while storing/using the full $relation string,

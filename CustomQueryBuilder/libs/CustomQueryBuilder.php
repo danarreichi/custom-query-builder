@@ -2970,17 +2970,17 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $local_keys = $exists_config['local_keys'];
 
             for ($i = 0; $i < count($foreign_keys); $i++) {
-                // Use relation identifier (alias if present, otherwise table name) for foreign key
-                $foreign_key_with_table = $relation_identifier . '.' . $foreign_keys[$i];
+                // Use relation identifier (alias if present, otherwise table name) for foreign key.
+                // BUG FIX: this used to unconditionally concatenate $relation_identifier onto
+                // $foreign_keys[$i] without checking for an existing dot, unlike every sibling
+                // processor (process_single_where_exists(), process_pending_where_has(), etc.)
+                // which all use _qualify_key(). An already-qualified foreign key (e.g. 'ms.idspk_workshop')
+                // produced invalid double-qualified SQL like "ms.ms.idspk_workshop".
+                $foreign_key_with_table = $this->_qualify_key($foreign_keys[$i], $relation_identifier);
 
-                // Check if local key already has table reference (contains a dot)
-                if (strpos($local_keys[$i], '.') !== false) {
-                    // Local key already has table reference (e.g., 'msd.iditem'), use as is
-                    $local_key_with_table = $local_keys[$i];
-                } else {
-                    // Local key is just column name, prepend parent table identifier
-                    $local_key_with_table = $parent_table_identifier . '.' . $local_keys[$i];
-                }
+                // Local key is prefixed with the parent table identifier only if it doesn't
+                // already contain a table reference (contains a dot).
+                $local_key_with_table = $this->_qualify_key($local_keys[$i], $parent_table_identifier);
 
                 $foreign_key_safe = $this->protect_identifiers($foreign_key_with_table, true);
                 $local_key_safe = $this->protect_identifiers($local_key_with_table, true);
