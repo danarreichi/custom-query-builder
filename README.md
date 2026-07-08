@@ -7,25 +7,26 @@ A drop-in, backward-compatible extension of CodeIgniter 3's Query Builder that a
 ## Table of Contents
 
 1. [Installation](#installation)
-2. [Quick Start](#quick-start)
-3. [The Result Object](#the-result-object)
-4. [Enhanced Basic Methods](#enhanced-basic-methods)
-5. [Eager Loading Relations](#eager-loading-relations)
-6. [Aggregate Subqueries](#aggregate-subqueries)
-7. [JOIN-Based Aggregates (Lighter Alternative)](#join-based-aggregates-lighter-alternative)
-8. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
-9. [Conditional Queries](#conditional-queries)
-10. [Search](#search)
-11. [Pagination with calc_rows()](#pagination-with-calc_rows)
-12. [Query Grouping](#query-grouping)
-13. [Chunking Large Datasets](#chunking-large-datasets)
-14. [pluck()](#pluck)
-15. [Transactions](#transactions)
-16. [Raw query()](#raw-query)
-17. [Security](#security)
-18. [Best Practices](#best-practices)
-19. [Complete Example](#complete-example)
-20. [Notes & Caveats](#notes--caveats)
+2. [Trying It Out (Clone & Run)](#trying-it-out-clone--run)
+3. [Quick Start](#quick-start)
+4. [The Result Object](#the-result-object)
+5. [Enhanced Basic Methods](#enhanced-basic-methods)
+6. [Eager Loading Relations](#eager-loading-relations)
+7. [Aggregate Subqueries](#aggregate-subqueries)
+8. [JOIN-Based Aggregates (Lighter Alternative)](#join-based-aggregates-lighter-alternative)
+9. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
+10. [Conditional Queries](#conditional-queries)
+11. [Search](#search)
+12. [Pagination with calc_rows()](#pagination-with-calc_rows)
+13. [Query Grouping](#query-grouping)
+14. [Chunking Large Datasets](#chunking-large-datasets)
+15. [pluck()](#pluck)
+16. [Transactions](#transactions)
+17. [Raw query()](#raw-query)
+18. [Security](#security)
+19. [Best Practices](#best-practices)
+20. [Complete Example](#complete-example)
+21. [Notes & Caveats](#notes--caveats)
 
 ---
 
@@ -127,6 +128,71 @@ $this->db->update('users', $data, ['id' => 1]);
 ```
 
 Adopt new features incrementally, one call at a time.
+
+---
+
+## Trying It Out (Clone & Run)
+
+The section above is for wiring this library into your **own** CodeIgniter 3 app. If you just cloned this repository and want to try the library itself — run its regression suite, poke at it interactively, see the SQL it generates — this repo ships everything needed to do that without touching a separate project.
+
+There are two sandboxes, both driven by the **same** database config file:
+
+- **`tests/`** — an automated PHPUnit suite (49 tests) that asserts exact compiled SQL strings and real query results. This is the fast, CI-friendly way to verify the library works.
+- **`test-ci3/`** — a full CodeIgniter 3 install with a manual smoke-test controller (`Test_custom_qb`) that exercises ~68 scenarios and prints plain-text output with `(expect ...)` annotations, viewable in a browser.
+
+### Prerequisites
+
+- **PHP 8.1+** and **Composer** (for `tests/` — the *library itself* stays PHP 5.6-compatible; only the PHPUnit tooling needs a modern PHP)
+- **MySQL/MariaDB** reachable locally
+
+### 1. Clone and point it at a database
+
+```bash
+git clone <repo-url>
+cd custom-query-builder
+```
+
+Create an empty database, then edit **`test-ci3/application/config/database.php`** — this one file is shared by both sandboxes, so you only ever configure the connection in one place:
+
+```php
+$db['default'] = array(
+    'hostname' => '127.0.0.1',
+    'username' => 'root',
+    'password' => '',            // <- your MySQL password
+    'database' => 'cqb_test',    // <- your database name
+    'dbdriver' => 'mysqli',
+    // ...
+);
+```
+
+No manual schema setup needed: the `scores`, `category_scores`, and `profiles` fixture tables are created and (re)seeded automatically on every test run; `users` (id, name, email, category) is seeded with 3 sample rows only if it's empty, so it's never clobbered if you've already got data there.
+
+### 2. Run the automated test suite (recommended)
+
+```bash
+cd tests
+composer install
+vendor/bin/phpunit
+```
+
+```
+PHPUnit 9.6.35 by Sebastian Bergmann and contributors.
+.................................................                 49 / 49 (100%)
+OK (49 tests, 60 assertions)
+```
+
+See [`tests/CompiledSqlTest.php`](tests/CompiledSqlTest.php) (exact-SQL-string assertions) and [`tests/ExecutionTest.php`](tests/ExecutionTest.php) (real query-result assertions) for what's covered.
+
+> If your environment has multiple PHP versions installed (e.g. Laragon/XAMPP) and `php`/`composer` on your `PATH` resolve to something older than 8.1, point at the right binary explicitly: `/path/to/php8.1 /path/to/composer.phar install` and `/path/to/php8.1 vendor/bin/phpunit`.
+
+### 3. Or try it interactively via the CI3 sandbox
+
+```bash
+cd test-ci3
+php -S 127.0.0.1:8080 index.php
+```
+
+Then open `http://127.0.0.1:8080/Test_custom_qb` in a browser — it walks through eager loading, `WHERE EXISTS`/`WHERE HAS`, aggregates, grouping, SQL-injection rejection, and more, printing the compiled SQL and/or result alongside an `(expect ...)` comment so you can eyeball correctness.
 
 ---
 

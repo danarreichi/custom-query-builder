@@ -616,6 +616,31 @@ trait QueryValidationTrait
     }
 
     /**
+     * Backtick-quote an already-validated identifier, preserving its
+     * bare/dotted shape (does NOT qualify a bare identifier with any prefix —
+     * that is what _qualify_key()/_quote_agg_column() are for).
+     *
+     * "col" -> "`col`", "tbl.col" -> "`tbl`.`col`".
+     *
+     * Defense-in-depth for callers (e.g. order_by_relation()) that already
+     * validate the identifier with is_valid_table_name()/is_valid_column_name()
+     * (alnum/underscore, optional single dot) and interpolate it into raw SQL:
+     * quoting here means a future relaxation of those regexes (e.g. to allow
+     * "AS alias") would not by itself reopen an injection path.
+     *
+     * @param string $identifier Validated identifier, optionally "table.column"
+     * @return string
+     */
+    protected function _quote_identifier($identifier)
+    {
+        if (strpos($identifier, '.') !== false) {
+            list($part1, $part2) = explode('.', $identifier, 2);
+            return '`' . $part1 . '`.`' . $part2 . '`';
+        }
+        return '`' . $identifier . '`';
+    }
+
+    /**
      * Quote a column reference for use inside an aggregate function.
      *
      * When $column already contains a table qualifier (e.g. "tbl.col") it is

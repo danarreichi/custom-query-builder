@@ -1214,7 +1214,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $localKey = strpos($rel['localKey'], '.') !== false
                 ? $rel['localKey']
                 : "{$parent_table_identifier}.{$rel['localKey']}";
-            $subquery = "(SELECT {$rel['column']} FROM {$rel['table']} WHERE {$rel['foreignKey']} = {$localKey} LIMIT 1)";
+
+            // Defense-in-depth: backtick-quote every identifier even though
+            // is_valid_table_name()/is_valid_column_name() already validated
+            // them in order_by_relation() — see _quote_identifier() docblock.
+            $quoted_column = $this->_quote_identifier($rel['column']);
+            $quoted_table = $this->_quote_identifier($rel['table']);
+            $quoted_foreign_key = $this->_quote_identifier($rel['foreignKey']);
+            $quoted_local_key = $this->_quote_identifier($localKey);
+
+            $subquery = "(SELECT {$quoted_column} FROM {$quoted_table} WHERE {$quoted_foreign_key} = {$quoted_local_key} LIMIT 1)";
             $inserts[] = [
                 'position' => $rel['position'],
                 'entry'    => ['field' => "{$subquery} {$rel['direction']}", 'direction' => '', 'escape' => FALSE],
@@ -1726,8 +1735,40 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Flush every pending relation/aggregate/group/order-by-relation queue onto
+     * qb_where/qb_orderby/select, in the fixed order every entry-point query
+     * method needs.
+     *
+     * Shared by get(), get_with_calc_rows(), get_compiled_select(), and
+     * count_all_results() — previously each of the four independently
+     * duplicated this exact 8-line sequence, so a new pending-queue type
+     * added later had to be wired into all four or it would silently no-op
+     * in whichever one was missed.
+     *
+     * Callers must set $this->_temp_table_name (via from() or by passing
+     * $table into this call) BEFORE calling this, since several processors
+     * need the resolved parent table/alias to qualify bare local keys.
+     */
+    protected function _flush_pending_query_state()
+    {
+        $this->process_pending_groups();
+        $this->process_pending_where_has();
+        $this->process_pending_join_aggregates();
+        $this->process_pending_aggregates();
+
+        $parent_table = $this->_temp_table_name;
+        if (!empty($parent_table)) {
+            $this->process_pending_where_queue($parent_table);
+            $this->process_pending_where_exists($parent_table);
+            $this->process_pending_where_aggregates($parent_table);
+            $this->process_pending_order_by_relations($parent_table);
+        }
+        $this->_flush_where_reorder_buffer();
+    }
+
+    /**
      * Execute query and get results with eager loading support
-     * 
+     *
      * @param string $table Table name (optional)
      * @param int|null $limit Limit number of results
      * @param int|null $offset Offset for results
@@ -1751,20 +1792,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         if ($this->_calc_rows_enabled)
             return $this->get_with_calc_rows($limit, $offset);
 
-        $this->process_pending_groups();
-        $this->process_pending_where_has();
-        $this->process_pending_join_aggregates();
-        $this->process_pending_aggregates();
-
-        // Process pending WHERE queue (handles grouping properly)
-        $parent_table = !empty($table) ? $table : $this->_temp_table_name;
-        if (!empty($parent_table)) {
-            $this->process_pending_where_queue($parent_table);
-            $this->process_pending_where_exists($parent_table);
-            $this->process_pending_where_aggregates($parent_table);
-            $this->process_pending_order_by_relations($parent_table);
-        }
-        $this->_flush_where_reorder_buffer();
+        $this->_flush_pending_query_state();
 
         if (!empty($this->with_relations))
             return $this->get_with_eager_loading('', $limit, $offset, null);
@@ -1802,21 +1830,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function get_with_calc_rows($limit = null, $offset = null)
     {
-        // Process pending conditions first
-        $this->process_pending_groups();
-        $this->process_pending_where_has();
-        $this->process_pending_join_aggregates();
-        $this->process_pending_aggregates();
-
-        // Process pending WHERE queue and WHERE EXISTS relations  
-        $parent_table = $this->_temp_table_name;
-        if (!empty($parent_table)) {
-            $this->process_pending_where_queue($parent_table);
-            $this->process_pending_where_exists($parent_table);
-            $this->process_pending_where_aggregates($parent_table);
-            $this->process_pending_order_by_relations($parent_table);
-        }
-        $this->_flush_where_reorder_buffer();
+        $this->_flush_pending_query_state();
 
         // Check if we have eager loading relations
         if (!empty($this->with_relations)) {
@@ -1986,19 +2000,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->from($table);
         }
 
-        $this->process_pending_groups();
-        $this->process_pending_where_has();
-        $this->process_pending_join_aggregates();
-        $this->process_pending_aggregates();
-
-        $parent_table = !empty($table) ? $table : $this->_temp_table_name;
-        if (!empty($parent_table)) {
-            $this->process_pending_where_queue($parent_table);
-            $this->process_pending_where_exists($parent_table);
-            $this->process_pending_where_aggregates($parent_table);
-            $this->process_pending_order_by_relations($parent_table);
-        }
-        $this->_flush_where_reorder_buffer();
+        $this->_flush_pending_query_state();
 
         $original_relations = $this->with_relations;
         $this->with_relations = [];
@@ -2033,19 +2035,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->from($table);
         }
 
-        $this->process_pending_groups();
-        $this->process_pending_where_has();
-        $this->process_pending_join_aggregates();
-        $this->process_pending_aggregates();
-
-        $parent_table = !empty($table) ? $table : $this->_temp_table_name;
-        if (!empty($parent_table)) {
-            $this->process_pending_where_queue($parent_table);
-            $this->process_pending_where_exists($parent_table);
-            $this->process_pending_where_aggregates($parent_table);
-            $this->process_pending_order_by_relations($parent_table);
-        }
-        $this->_flush_where_reorder_buffer();
+        $this->_flush_pending_query_state();
 
         $original_relations = $this->with_relations;
         $this->with_relations = [];

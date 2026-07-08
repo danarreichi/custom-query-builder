@@ -7,25 +7,26 @@ Ekstensi drop-in dan backward-compatible untuk Query Builder CodeIgniter 3 yang 
 ## Daftar Isi
 
 1. [Instalasi](#instalasi)
-2. [Mulai Cepat](#mulai-cepat)
-3. [Objek Result](#objek-result)
-4. [Method Dasar yang Diperluas](#method-dasar-yang-diperluas)
-5. [Eager Loading Relasi](#eager-loading-relasi)
-6. [Subquery Agregat](#subquery-agregat)
-7. [Agregat Berbasis JOIN (Alternatif Lebih Ringan)](#agregat-berbasis-join-alternatif-lebih-ringan)
-8. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
-9. [Query Kondisional](#query-kondisional)
-10. [Search](#search)
-11. [Pagination dengan calc_rows()](#pagination-dengan-calc_rows)
-12. [Query Grouping](#query-grouping)
-13. [Chunking Dataset Besar](#chunking-dataset-besar)
-14. [pluck()](#pluck)
-15. [Transaksi](#transaksi)
-16. [query() Mentah](#query-mentah)
-17. [Keamanan](#keamanan)
-18. [Praktik Terbaik](#praktik-terbaik)
-19. [Contoh Lengkap](#contoh-lengkap)
-20. [Catatan & Hal yang Perlu Diperhatikan](#catatan--hal-yang-perlu-diperhatikan)
+2. [Mencoba Proyek Ini (Clone & Jalankan)](#mencoba-proyek-ini-clone--jalankan)
+3. [Mulai Cepat](#mulai-cepat)
+4. [Objek Result](#objek-result)
+5. [Method Dasar yang Diperluas](#method-dasar-yang-diperluas)
+6. [Eager Loading Relasi](#eager-loading-relasi)
+7. [Subquery Agregat](#subquery-agregat)
+8. [Agregat Berbasis JOIN (Alternatif Lebih Ringan)](#agregat-berbasis-join-alternatif-lebih-ringan)
+9. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
+10. [Query Kondisional](#query-kondisional)
+11. [Search](#search)
+12. [Pagination dengan calc_rows()](#pagination-dengan-calc_rows)
+13. [Query Grouping](#query-grouping)
+14. [Chunking Dataset Besar](#chunking-dataset-besar)
+15. [pluck()](#pluck)
+16. [Transaksi](#transaksi)
+17. [query() Mentah](#query-mentah)
+18. [Keamanan](#keamanan)
+19. [Praktik Terbaik](#praktik-terbaik)
+20. [Contoh Lengkap](#contoh-lengkap)
+21. [Catatan & Hal yang Perlu Diperhatikan](#catatan--hal-yang-perlu-diperhatikan)
 
 ---
 
@@ -127,6 +128,71 @@ $this->db->update('users', $data, ['id' => 1]);
 ```
 
 Adopsi fitur baru bisa dilakukan bertahap, satu pemanggilan pada satu waktu.
+
+---
+
+## Mencoba Proyek Ini (Clone & Jalankan)
+
+Bagian di atas untuk memasang library ini ke aplikasi CodeIgniter 3 milik **kamu sendiri**. Kalau kamu baru saja meng-clone repo ini dan ingin mencoba library-nya langsung — jalankan test suite-nya, coba-coba interaktif, lihat SQL yang dihasilkan — repo ini sudah menyediakan semuanya tanpa perlu proyek terpisah.
+
+Ada dua sandbox, keduanya memakai file konfigurasi database yang **sama**:
+
+- **`tests/`** — test suite PHPUnit otomatis (49 test) yang memverifikasi string SQL hasil compile secara persis dan hasil query sungguhan. Ini cara tercepat dan paling cocok untuk CI.
+- **`test-ci3/`** — instalasi CodeIgniter 3 lengkap dengan controller smoke-test manual (`Test_custom_qb`) yang menjalankan ~68 skenario dan mencetak output teks polos beserta anotasi `(expect ...)`, bisa dilihat lewat browser.
+
+### Prasyarat
+
+- **PHP 8.1+** dan **Composer** (khusus untuk `tests/` — library-nya sendiri tetap kompatibel PHP 5.6; hanya tooling PHPUnit yang butuh PHP modern)
+- **MySQL/MariaDB** yang bisa diakses secara lokal
+
+### 1. Clone dan arahkan ke database
+
+```bash
+git clone <repo-url>
+cd custom-query-builder
+```
+
+Buat database kosong, lalu edit **`test-ci3/application/config/database.php`** — file ini dipakai bersama oleh kedua sandbox, jadi kamu cuma perlu konfigurasi koneksi di satu tempat:
+
+```php
+$db['default'] = array(
+    'hostname' => '127.0.0.1',
+    'username' => 'root',
+    'password' => '',            // <- password MySQL kamu
+    'database' => 'cqb_test',    // <- nama database kamu
+    'dbdriver' => 'mysqli',
+    // ...
+);
+```
+
+Tidak perlu setup skema manual: tabel fixture `scores`, `category_scores`, dan `profiles` otomatis dibuat & di-seed ulang setiap kali test dijalankan; tabel `users` (id, name, email, category) hanya di-seed dengan 3 baris contoh kalau kosong, jadi data yang sudah ada tidak akan tertimpa.
+
+### 2. Jalankan test suite otomatis (disarankan)
+
+```bash
+cd tests
+composer install
+vendor/bin/phpunit
+```
+
+```
+PHPUnit 9.6.35 by Sebastian Bergmann and contributors.
+.................................................                 49 / 49 (100%)
+OK (49 tests, 60 assertions)
+```
+
+Lihat [`tests/CompiledSqlTest.php`](tests/CompiledSqlTest.php) (assertion string SQL persis) dan [`tests/ExecutionTest.php`](tests/ExecutionTest.php) (assertion hasil query sungguhan) untuk detail cakupannya.
+
+> Kalau di environment kamu ada banyak versi PHP terpasang (mis. Laragon/XAMPP) dan `php`/`composer` di `PATH` mengarah ke versi lebih lama dari 8.1, panggil binary yang benar secara eksplisit: `/path/ke/php8.1 /path/ke/composer.phar install` dan `/path/ke/php8.1 vendor/bin/phpunit`.
+
+### 3. Atau coba secara interaktif lewat sandbox CI3
+
+```bash
+cd test-ci3
+php -S 127.0.0.1:8080 index.php
+```
+
+Lalu buka `http://127.0.0.1:8080/Test_custom_qb` di browser — akan menjalankan eager loading, `WHERE EXISTS`/`WHERE HAS`, agregat, grouping, penolakan SQL injection, dan lainnya, mencetak SQL hasil compile dan/atau hasilnya beserta komentar `(expect ...)` supaya kamu bisa cek kebenarannya langsung.
 
 ---
 
