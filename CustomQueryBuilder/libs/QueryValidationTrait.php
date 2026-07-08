@@ -592,6 +592,26 @@ trait QueryValidationTrait
     }
 
     /**
+     * Qualify a foreign/local key with a default table alias unless it already
+     * carries its own table qualifier (contains a dot).
+     *
+     * Centralizes a "check for a dot, else prepend a default alias" pattern that
+     * used to be repeated (with a different default-alias argument each time)
+     * across every pending-condition processor: process_pending_where_has(),
+     * process_pending_aggregates(), process_pending_where_aggregates(),
+     * process_single_where_exists(), and the nested-aggregate path inside
+     * load_single_relation().
+     *
+     * @param string $key Column name, optionally already table-qualified ("table.col")
+     * @param string $default_alias Table/alias to prefix $key with when it has no qualifier of its own
+     * @return string
+     */
+    protected function _qualify_key($key, $default_alias)
+    {
+        return strpos($key, '.') !== false ? $key : $default_alias . '.' . $key;
+    }
+
+    /**
      * Quote a column reference for use inside an aggregate function.
      *
      * When $column already contains a table qualifier (e.g. "tbl.col") it is

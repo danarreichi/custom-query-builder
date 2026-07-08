@@ -2312,27 +2312,11 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
             $foreign_keys = $where_has_config['foreign_key'];
             $local_keys = $where_has_config['local_key'];
+            $main_table_identifier = $this->extract_table_or_alias($mainTable);
 
             for ($i = 0; $i < count($foreign_keys); $i++) {
-                // Check if foreign key already has table reference (contains a dot)
-                if (strpos($foreign_keys[$i], '.') !== false) {
-                    // Foreign key already has table reference (e.g., 'item.iditem_category'), use as is
-                    $foreign_key_with_table = $foreign_keys[$i];
-                } else {
-                    // Foreign key is just column name, prepend relation table
-                    $foreign_key_with_table = $where_has_config['relation'] . '.' . $foreign_keys[$i];
-                }
-
-                // Check if local key already has table reference (contains a dot)
-                if (strpos($local_keys[$i], '.') !== false) {
-                    // Local key already has table reference (e.g., 'msd.iditem'), use as is
-                    $local_key_with_table = $local_keys[$i];
-                } else {
-                    // Local key is just column name, prepend main table
-                    // Extract alias from mainTable if present
-                    $main_table_identifier = $this->extract_table_or_alias($mainTable);
-                    $local_key_with_table = $main_table_identifier . '.' . $local_keys[$i];
-                }
+                $foreign_key_with_table = $this->_qualify_key($foreign_keys[$i], $where_has_config['relation']);
+                $local_key_with_table = $this->_qualify_key($local_keys[$i], $main_table_identifier);
 
                 $foreign_key_safe = $this->protect_identifiers($foreign_key_with_table, true);
                 $local_key_safe = $this->protect_identifiers($local_key_with_table, true);
@@ -2423,6 +2407,50 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Run an aggregate/relation callback against $subquery with its FROM
+     * temporarily swapped to the bare subquery alias (so bare column references
+     * inside the callback resolve against the subquery's own table), then flush
+     * any relation/aggregate state the callback queued on $subquery itself.
+     *
+     * Centralizes a block that used to be duplicated across
+     * process_pending_aggregates(), process_pending_where_aggregates(), and the
+     * nested-aggregate path inside load_single_relation() — the nested-aggregate
+     * copy had drifted out of sync and never called flush_pending_relation_state()
+     * at all, so a with_count()/with_sum()/where_aggregate() queued inside a
+     * callback passed to a with_count()/with_sum() that itself lives inside a
+     * with_one()/with_many() relation callback was silently dropped there, unlike
+     * the identical nesting one level shallower (which does flush correctly).
+     *
+     * @param CustomQueryBuilder $subquery Single-column aggregate subquery being built
+     * @param string $subquery_alias Alias to expose as $subquery's bare FROM during the callback
+     * @param callable(CustomQueryBuilder): void|null $callback
+     * @return void
+     */
+    protected function _run_aggregate_callback($subquery, $subquery_alias, $callback)
+    {
+        if (!is_callable($callback))
+            return;
+
+        // Store original FROM to restore later
+        $original_from = $subquery->qb_from;
+
+        // Temporarily replace FROM with aliased version for callback processing
+        // This ensures WHERE conditions in callback use the subquery alias
+        $subquery->qb_from = [$subquery_alias];
+
+        $callback($subquery);
+
+        // Restore original FROM (which already includes alias)
+        $subquery->qb_from = $original_from;
+
+        // Process any pending operations in subquery recursively. $subquery is a
+        // single-column aggregate subquery here — see flush_pending_relation_state()'s
+        // $flush_select_aggregates doc for why a nested with_count()/with_sum()/etc.
+        // must not add a 2nd SELECT column.
+        $subquery->flush_pending_relation_state($subquery_alias, false);
+    }
+
+    /**
      * Process pending aggregate functions by adding them as subqueries in SELECT
      *
      * @param string|null $context_table Optional context table to use instead of main table (for nested callbacks)
@@ -2489,54 +2517,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $local_keys = $aggregate_config['local_key'];
 
             for ($i = 0; $i < count($foreign_keys); $i++) {
-                // Check if foreign key already has table reference (contains a dot)
-                if (strpos($foreign_keys[$i], '.') !== false) {
-                    // Foreign key already has table reference (e.g., 'item.iditem_category'), use as is
-                    $foreign_key_with_table = $foreign_keys[$i];
-                } else {
-                    // Use subquery alias instead of relation table name for foreign key
-                    $foreign_key_with_table = $subquery_alias . '.' . $foreign_keys[$i];
-                }
-
-                // Check if local key already has table reference (contains a dot)
-                if (strpos($local_keys[$i], '.') !== false) {
-                    // Local key already has table reference (e.g., 'msd.iditem'), use as is
-                    $local_key_with_table = $local_keys[$i];
-                } else {
-                    // Local key is just column name, prepend main table identifier
-                    $local_key_with_table = $main_table_alias . '.' . $local_keys[$i];
-                }
+                $foreign_key_with_table = $this->_qualify_key($foreign_keys[$i], $subquery_alias);
+                $local_key_with_table = $this->_qualify_key($local_keys[$i], $main_table_alias);
 
                 $foreign_key_safe = $this->protect_identifiers($foreign_key_with_table, true);
                 $local_key_safe = $this->protect_identifiers($local_key_with_table, true);
 
-                if ($i === 0) {
-                    $subquery->where("{$foreign_key_safe} = {$local_key_safe}", null, false);
-                } else {
-                    $subquery->where("{$foreign_key_safe} = {$local_key_safe}", null, false);
-                }
+                $subquery->where("{$foreign_key_safe} = {$local_key_safe}", null, false);
             }
 
-            if (is_callable($aggregate_config['callback'])) {
-                // Store original FROM to restore later
-                $original_from = $subquery->qb_from;
-
-                // Temporarily replace FROM with aliased version for callback processing
-                // This ensures WHERE conditions in callback use the subquery alias
-                $subquery->qb_from = [$subquery_alias];
-
-                $aggregate_config['callback']($subquery);
-
-                // Restore original FROM (which already includes alias)
-                $subquery->qb_from = $original_from;
-
-                // Process any pending operations in subquery recursively
-                // Pass the relation table with alias as context for nested aggregates.
-                // $subquery is a single-column `SELECT <agg_func>` subquery here — see
-                // flush_pending_relation_state()'s $flush_select_aggregates doc for why
-                // a nested with_count()/with_sum()/etc. must not add a 2nd SELECT column.
-                $subquery->flush_pending_relation_state($subquery_alias, false);
-            }
+            $this->_run_aggregate_callback($subquery, $subquery_alias, $aggregate_config['callback']);
 
             // Add subquery directly to qb_select array to preserve existing SELECT fields
             $compiled_subquery = $subquery->get_compiled_select();
@@ -2615,19 +2605,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $local_keys = $aggregate_config['local_key'];
 
             for ($i = 0; $i < count($foreign_keys); $i++) {
-                // Check if foreign key already has table reference
-                if (strpos($foreign_keys[$i], '.') !== false) {
-                    $foreign_key_with_table = $foreign_keys[$i];
-                } else {
-                    $foreign_key_with_table = $subquery_alias . '.' . $foreign_keys[$i];
-                }
-
-                // Check if local key already has table reference
-                if (strpos($local_keys[$i], '.') !== false) {
-                    $local_key_with_table = $local_keys[$i];
-                } else {
-                    $local_key_with_table = $main_table_alias . '.' . $local_keys[$i];
-                }
+                $foreign_key_with_table = $this->_qualify_key($foreign_keys[$i], $subquery_alias);
+                $local_key_with_table = $this->_qualify_key($local_keys[$i], $main_table_alias);
 
                 $foreign_key_safe = $this->protect_identifiers($foreign_key_with_table, true);
                 $local_key_safe = $this->protect_identifiers($local_key_with_table, true);
@@ -2635,24 +2614,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
                 $subquery->where("{$foreign_key_safe} = {$local_key_safe}", null, false);
             }
 
-            // Execute callback if provided
-            if (is_callable($aggregate_config['callback'])) {
-                // Store original FROM to restore later
-                $original_from = $subquery->qb_from;
-
-                // Temporarily replace FROM with aliased version for callback processing
-                $subquery->qb_from = [$subquery_alias];
-
-                $aggregate_config['callback']($subquery);
-
-                // Restore original FROM
-                $subquery->qb_from = $original_from;
-
-                // Process any pending operations in subquery recursively.
-                // $subquery is a single-column COALESCE(subquery,0)-style aggregate
-                // subquery here — skip flushing pending_aggregates as a 2nd SELECT column.
-                $subquery->flush_pending_relation_state($subquery_alias, false);
-            }
+            $this->_run_aggregate_callback($subquery, $subquery_alias, $aggregate_config['callback']);
 
             // Build the WHERE condition with subquery
             $subquery->_flush_where_reorder_buffer();
@@ -2916,26 +2878,15 @@ class CustomQueryBuilder extends CI_DB_query_builder
 
         for ($i = 0; $i < count($foreign_keys); $i++) {
             // Use relation identifier (alias if present, otherwise table name) for foreign key
-            // If foreign key already has a table qualifier (contains a dot), use it as-is
-            if (strpos($foreign_keys[$i], '.') !== false) {
-                $foreign_key_with_table = $foreign_keys[$i];
-            } else {
-                $foreign_key_with_table = $relation_identifier . '.' . $foreign_keys[$i];
-            }
+            $foreign_key_with_table = $this->_qualify_key($foreign_keys[$i], $relation_identifier);
 
-            // Check if local key already has table reference (contains a dot)
-            if (strpos($local_keys[$i], '.') !== false) {
-                // Local key already has table reference (e.g., 'msd.iditem'), use as is
-                $local_key_with_table = $local_keys[$i];
-            } else {
-                // Local key is just column name, prepend parent table identifier if available
-                if (empty($parent_table_identifier)) {
-                    // If no parent table, just use the column name (might cause issues, but better than breaking)
-                    $local_key_with_table = $local_keys[$i];
-                } else {
-                    $local_key_with_table = $parent_table_identifier . '.' . $local_keys[$i];
-                }
-            }
+            // Local key is prefixed with the parent table identifier if available;
+            // with no parent context, leave a bare column name rather than
+            // producing an invalid leading-dot qualifier (might still be
+            // ambiguous, but better than breaking).
+            $local_key_with_table = empty($parent_table_identifier)
+                ? $local_keys[$i]
+                : $this->_qualify_key($local_keys[$i], $parent_table_identifier);
 
             $foreign_key_safe = $this->protect_identifiers($foreign_key_with_table, true);
             $local_key_safe = $this->protect_identifiers($local_key_with_table, true);
@@ -3351,8 +3302,61 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Apply the foreign-key match conditions used to fetch relation rows in
+     * load_single_relation() — composite-key values become OR-of-AND groups,
+     * a single key becomes a plain WHERE IN.
+     *
+     * Centralizes a block that used to be built twice, byte-for-byte
+     * identically, inside load_single_relation() itself: once for the query
+     * that fetches every relation row, and again — rebuilt from scratch — for
+     * the separate query used only when a relation callback needs to run.
+     *
+     * @param CustomQueryBuilder $query Query instance already reset and from()'d to $relation
+     * @param string $relation Relation table string (used to derive the default FK table prefix)
+     * @param array $foreign_keys Foreign key column(s) in the relation table
+     * @param array $composite_values JSON-encoded [key1, key2, ...] tuples (used when count($foreign_keys) > 1)
+     * @param array $local_values Distinct local key values (used when count($foreign_keys) === 1)
+     * @return void
+     */
+    protected function _apply_relation_key_filter($query, $relation, $foreign_keys, $composite_values, $local_values)
+    {
+        if (count($foreign_keys) > 1) {
+            $query->group_start();
+            $first_condition = true;
+
+            foreach ($composite_values as $composite_value) {
+                $key_parts = json_decode($composite_value, true);
+
+                if (!$first_condition) {
+                    $query->or_group_start();
+                } else {
+                    $query->group_start();
+                }
+
+                for ($i = 0; $i < count($foreign_keys); $i++) {
+                    $query->where($foreign_keys[$i], $key_parts[$i]);
+                }
+
+                $query->group_end();
+                $first_condition = false;
+            }
+            $query->group_end();
+        } else {
+            // Add table prefix to foreign key if not already present
+            $foreign_key = $foreign_keys[0];
+            if (strpos($foreign_key, '.') === false) {
+                // Extract relation table name (without alias if present)
+                $relation_table = $this->extract_table_name($relation);
+                $foreign_key = $relation_table . '.' . $foreign_key;
+            }
+
+            $query->where_in($foreign_key, $local_values);
+        }
+    }
+
+    /**
      * Load single relation for given data
-     * 
+     *
      * @param array $data Main query result data
      * @param array $config Relation configuration
      * @return array Data with loaded relation
@@ -3431,6 +3435,15 @@ class CustomQueryBuilder extends CI_DB_query_builder
             });
         }
 
+        // Only one of these is ever populated by the branch above, depending on
+        // whether this is a composite (multi-column) or single-column key — default
+        // the other to an empty array so passing both unconditionally into
+        // _apply_relation_key_filter() below doesn't trigger an undefined-variable
+        // notice (empty($undefined) is notice-safe, but a bare undefined variable
+        // passed as a function argument is not).
+        $composite_values = isset($composite_values) ? $composite_values : [];
+        $local_values = isset($local_values) ? $local_values : [];
+
         if (
             (count($local_keys) > 1 && empty($composite_values)) ||
             (count($local_keys) === 1 && empty($local_values))
@@ -3445,77 +3458,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $relation_query->_executed_queries = [];
         $relation_query->reset_query();
         $relation_query->from($config['relation']);
-
-        if (count($foreign_keys) > 1) {
-            $relation_query->group_start();
-            $first_condition = true;
-
-            foreach ($composite_values as $composite_value) {
-                $key_parts = json_decode($composite_value, true);
-
-                if (!$first_condition) {
-                    $relation_query->or_group_start();
-                } else {
-                    $relation_query->group_start();
-                }
-
-                for ($i = 0; $i < count($foreign_keys); $i++) {
-                    $relation_query->where($foreign_keys[$i], $key_parts[$i]);
-                }
-
-                $relation_query->group_end();
-                $first_condition = false;
-            }
-            $relation_query->group_end();
-        } else {
-            // Add table prefix to foreign key if not already present
-            $foreign_key = $foreign_keys[0];
-            if (strpos($foreign_key, '.') === false) {
-                // Extract relation table name (without alias if present)
-                $relation_table = $this->extract_table_name($config['relation']);
-                $foreign_key = $relation_table . '.' . $foreign_key;
-            }
-
-            $relation_query->where_in($foreign_key, $local_values);
-        }
+        $this->_apply_relation_key_filter($relation_query, $config['relation'], $foreign_keys, $composite_values, $local_values);
 
         if (is_callable($config['callback'])) {
             $base_db = clone $this;
             $base_db->_executed_queries = [];
             $base_db->reset_query();
             $base_db->from($config['relation']);
-
-            if (count($foreign_keys) > 1) {
-                $base_db->group_start();
-                $first_condition = true;
-
-                foreach ($composite_values as $composite_value) {
-                    $key_parts = json_decode($composite_value, true);
-
-                    if (!$first_condition) {
-                        $base_db->or_group_start();
-                    } else {
-                        $base_db->group_start();
-                    }
-
-                    for ($i = 0; $i < count($foreign_keys); $i++) {
-                        $base_db->where($foreign_keys[$i], $key_parts[$i]);
-                    }
-
-                    $base_db->group_end();
-                    $first_condition = false;
-                }
-                $base_db->group_end();
-            } else {
-                // Add table prefix to foreign key for callback query too
-                $foreign_key = $foreign_keys[0];
-                if (strpos($foreign_key, '.') === false) {
-                    $relation_table = $this->extract_table_name($config['relation']);
-                    $foreign_key = $relation_table . '.' . $foreign_key;
-                }
-
-                $base_db->where_in($foreign_key, $local_values);
-            }
+            $this->_apply_relation_key_filter($base_db, $config['relation'], $foreign_keys, $composite_values, $local_values);
 
             $relation_builder = new NestedQueryBuilder($base_db);
 
@@ -3582,25 +3532,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
                     $aggregate_local_keys = $aggregate_config['local_key'];
 
                     for ($i = 0; $i < count($aggregate_foreign_keys); $i++) {
-                        // Check if foreign/local keys already have table prefix
-                        $has_fk_prefix = strpos($aggregate_foreign_keys[$i], '.') !== false;
-                        $has_lk_prefix = strpos($aggregate_local_keys[$i], '.') !== false;
-
-                        if ($has_fk_prefix) {
-                            // Foreign key already has prefix, use as is (but we won't use it with alias)
-                            $aggregate_foreign_key_with_table = $aggregate_foreign_keys[$i];
-                        } else {
-                            // Use subquery alias instead of relation name for foreign key
-                            $aggregate_foreign_key_with_table = $subquery_alias . '.' . $aggregate_foreign_keys[$i];
-                        }
-
-                        if ($has_lk_prefix) {
-                            // Local key already has prefix, use as is
-                            $aggregate_local_key_with_table = $aggregate_local_keys[$i];
-                        } else {
-                            // Add parent relation table prefix (not aggregate relation)
-                            $aggregate_local_key_with_table = $config['relation'] . '.' . $aggregate_local_keys[$i];
-                        }
+                        // Foreign key qualifies against the aggregate subquery's own alias;
+                        // local key qualifies against the PARENT relation's table (config['relation']
+                        // is always a bare, alias-free table name here — with()/with_one()/with_many()
+                        // validate $relation via is_valid_table_name(), which rejects any whitespace).
+                        $aggregate_foreign_key_with_table = $this->_qualify_key($aggregate_foreign_keys[$i], $subquery_alias);
+                        $aggregate_local_key_with_table = $this->_qualify_key($aggregate_local_keys[$i], $config['relation']);
 
                         $aggregate_foreign_key_safe = $relation_builder->db->protect_identifiers($aggregate_foreign_key_with_table, true);
                         $aggregate_local_key_safe = $relation_builder->db->protect_identifiers($aggregate_local_key_with_table, true);
@@ -3608,19 +3545,15 @@ class CustomQueryBuilder extends CI_DB_query_builder
                         $subquery->where("$aggregate_foreign_key_safe = $aggregate_local_key_safe", null, false);
                     }
 
-                    if (is_callable($aggregate_config['callback'])) {
-                        // Store original FROM to restore later
-                        $original_from = $subquery->qb_from;
-
-                        // Temporarily replace FROM with aliased version for callback processing
-                        // This ensures WHERE conditions in callback use the subquery alias
-                        $subquery->qb_from = [$subquery_alias];
-
-                        $aggregate_config['callback']($subquery);
-
-                        // Restore original FROM (which already includes alias)
-                        $subquery->qb_from = $original_from;
-                    }
+                    // BUG FIX: this call site used to inline just the FROM-swap half of this
+                    // pattern and never called flush_pending_relation_state() afterwards — a
+                    // with_count()/with_sum()/where_aggregate() queued inside THIS callback
+                    // (i.e. an aggregate nested two levels deep: with_one/with_many -> with_sum
+                    // callback -> another with_count/where_aggregate) was silently dropped here,
+                    // unlike the identical nesting one level shallower in
+                    // process_pending_aggregates()/process_pending_where_aggregates(), which did
+                    // flush correctly. Routing through the same shared helper fixes that gap.
+                    $this->_run_aggregate_callback($subquery, $subquery_alias, $aggregate_config['callback']);
 
                     // Add subquery to main query SELECT (append to existing SELECT, not replace)
                     $compiled_subquery = $subquery->get_compiled_select();

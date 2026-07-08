@@ -126,31 +126,20 @@ class NestedQueryBuilder
     }
 
     /**
-     * Add WHERE EXISTS condition with callback
-     * 
-     * Example:
-     * // Check if user has published posts
-     * $users = $this->db->where_exists(function($query) {
-     *     $query->select('1')
-     *           ->from('posts')
-     *           ->where('posts.user_id = users.id')
-     *           ->where('status', 'published');
-     * });
-     * 
-     * // Check if outlet has transactions with delivery
-     * $outlets = $this->db->where_exists(function($query) {
-     *     $query->select('1')
-     *           ->from('marketing_spk ms')
-     *           ->join('transaction t', 't.idmarketing_spk = ms.idmarketing_spk', 'inner')
-     *           ->where('ms.idspk_workshop = outlet.idoutlet')
-     *           ->where('t.status', 1);
-     * });
-     * 
-     * @param callable(NestedQueryBuilder): void $callback Callback to build EXISTS subquery
+     * Shared implementation for where_exists()/where_not_exists()/or_where_exists()/
+     * or_where_not_exists() below — see CustomQueryBuilder::add_where_exists_callback()
+     * for the equivalent consolidation on the non-nested side. All four public
+     * methods used to carry an identical ~35-line body, differing only in whether
+     * "NOT " prefixes the EXISTS keyword and whether where()/or_where() is used
+     * to attach the compiled clause.
+     *
+     * @param string $condition_type 'AND' or 'OR'
+     * @param string $exists_type 'EXISTS' or 'NOT EXISTS'
+     * @param callable(NestedQueryBuilder): void $callback Callback to build the subquery
      * @return $this
      * @throws InvalidArgumentException
      */
-    public function where_exists($callback)
+    protected function add_where_exists_callback($condition_type, $exists_type, $callback)
     {
         if (!is_callable($callback)) {
             throw new InvalidArgumentException('Callback must be callable');
@@ -184,15 +173,50 @@ class NestedQueryBuilder
         // Get the compiled subquery
         $compiled_subquery = $subquery->get_compiled_select();
 
-        // Add EXISTS condition
-        $this->db->where("EXISTS ({$compiled_subquery})", null, false);
+        // Add [NOT] EXISTS condition
+        $clause = "{$exists_type} ({$compiled_subquery})";
+        if ($condition_type === 'OR') {
+            $this->db->or_where($clause, null, false);
+        } else {
+            $this->db->where($clause, null, false);
+        }
 
         return $this;
     }
 
     /**
+     * Add WHERE EXISTS condition with callback
+     *
+     * Example:
+     * // Check if user has published posts
+     * $users = $this->db->where_exists(function($query) {
+     *     $query->select('1')
+     *           ->from('posts')
+     *           ->where('posts.user_id = users.id')
+     *           ->where('status', 'published');
+     * });
+     *
+     * // Check if outlet has transactions with delivery
+     * $outlets = $this->db->where_exists(function($query) {
+     *     $query->select('1')
+     *           ->from('marketing_spk ms')
+     *           ->join('transaction t', 't.idmarketing_spk = ms.idmarketing_spk', 'inner')
+     *           ->where('ms.idspk_workshop = outlet.idoutlet')
+     *           ->where('t.status', 1);
+     * });
+     *
+     * @param callable(NestedQueryBuilder): void $callback Callback to build EXISTS subquery
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function where_exists($callback)
+    {
+        return $this->add_where_exists_callback('AND', 'EXISTS', $callback);
+    }
+
+    /**
      * Add WHERE NOT EXISTS condition with callback
-     * 
+     *
      * Example:
      * // Users that don't have any published posts
      * $users = $this->db->where_not_exists(function($query) {
@@ -201,7 +225,7 @@ class NestedQueryBuilder
      *           ->where('posts.user_id = users.id')
      *           ->where('status', 'published');
      * });
-     * 
+     *
      * // Outlets without any completed transactions
      * $outlets = $this->db->where_not_exists(function($query) {
      *     $query->select('1')
@@ -210,48 +234,19 @@ class NestedQueryBuilder
      *           ->where('ms.idspk_workshop = outlet.idoutlet')
      *           ->where('t.status', 'completed');
      * });
-     * 
+     *
      * @param callable(NestedQueryBuilder): void $callback Callback to build NOT EXISTS subquery
      * @return $this
      * @throws InvalidArgumentException
      */
     public function where_not_exists($callback)
     {
-        if (!is_callable($callback)) {
-            throw new InvalidArgumentException('Callback must be callable');
-        }
-
-        // Clone $this->db before wrapping it — without this, building the subquery
-        // (select()/from()/where() calls proxied via __call()) mutates the SAME
-        // db instance the caller is still using, and get_compiled_select()'s default
-        // $reset=true then wipes it out entirely (qb_from included), producing
-        // "Error 1096: No tables used" on whatever query the caller builds next.
-        // reset_query() afterwards clears whatever qb_from/qb_where the clone
-        // inherited from the caller's in-progress query, so the subquery starts
-        // clean instead of e.g. carrying over the caller's own FROM/WHERE.
-        $subquery_db = clone $this->db;
-        $subquery_db->reset_query();
-        $subquery = new NestedQueryBuilder($subquery_db);
-
-        // Execute callback to build subquery
-        $callback($subquery);
-
-        // Transfer + flush any relation/aggregate state queued directly on
-        // $subquery — see _flush_own_pending_state_into() for why this is needed.
-        $subquery->_flush_own_pending_state_into($subquery_db);
-
-        // Get the compiled subquery
-        $compiled_subquery = $subquery->get_compiled_select();
-
-        // Add NOT EXISTS condition
-        $this->db->where("NOT EXISTS ({$compiled_subquery})", null, false);
-
-        return $this;
+        return $this->add_where_exists_callback('AND', 'NOT EXISTS', $callback);
     }
 
     /**
      * Add OR WHERE EXISTS condition with callback
-     * 
+     *
      * Example:
      * // Users that have orders OR have posts
      * $users = $this->db->where_exists(function($query) {
@@ -263,48 +258,19 @@ class NestedQueryBuilder
      *           ->from('posts')
      *           ->where('posts.user_id = users.id');
      * });
-     * 
+     *
      * @param callable(NestedQueryBuilder): void $callback Callback to build EXISTS subquery
      * @return $this
      * @throws InvalidArgumentException
      */
     public function or_where_exists($callback)
     {
-        if (!is_callable($callback)) {
-            throw new InvalidArgumentException('Callback must be callable');
-        }
-
-        // Clone $this->db before wrapping it — without this, building the subquery
-        // (select()/from()/where() calls proxied via __call()) mutates the SAME
-        // db instance the caller is still using, and get_compiled_select()'s default
-        // $reset=true then wipes it out entirely (qb_from included), producing
-        // "Error 1096: No tables used" on whatever query the caller builds next.
-        // reset_query() afterwards clears whatever qb_from/qb_where the clone
-        // inherited from the caller's in-progress query, so the subquery starts
-        // clean instead of e.g. carrying over the caller's own FROM/WHERE.
-        $subquery_db = clone $this->db;
-        $subquery_db->reset_query();
-        $subquery = new NestedQueryBuilder($subquery_db);
-
-        // Execute callback to build subquery
-        $callback($subquery);
-
-        // Transfer + flush any relation/aggregate state queued directly on
-        // $subquery — see _flush_own_pending_state_into() for why this is needed.
-        $subquery->_flush_own_pending_state_into($subquery_db);
-
-        // Get the compiled subquery
-        $compiled_subquery = $subquery->get_compiled_select();
-
-        // Add OR EXISTS condition
-        $this->db->or_where("EXISTS ({$compiled_subquery})", null, false);
-
-        return $this;
+        return $this->add_where_exists_callback('OR', 'EXISTS', $callback);
     }
 
     /**
      * Add OR WHERE NOT EXISTS condition with callback
-     * 
+     *
      * Example:
      * // Users that have orders OR don't have cancelled orders
      * $users = $this->db->where_exists(function($query) {
@@ -318,43 +284,14 @@ class NestedQueryBuilder
      *           ->where('orders.user_id = users.id')
      *           ->where('status', 'cancelled');
      * });
-     * 
+     *
      * @param callable(NestedQueryBuilder): void $callback Callback to build NOT EXISTS subquery
      * @return $this
      * @throws InvalidArgumentException
      */
     public function or_where_not_exists($callback)
     {
-        if (!is_callable($callback)) {
-            throw new InvalidArgumentException('Callback must be callable');
-        }
-
-        // Clone $this->db before wrapping it — without this, building the subquery
-        // (select()/from()/where() calls proxied via __call()) mutates the SAME
-        // db instance the caller is still using, and get_compiled_select()'s default
-        // $reset=true then wipes it out entirely (qb_from included), producing
-        // "Error 1096: No tables used" on whatever query the caller builds next.
-        // reset_query() afterwards clears whatever qb_from/qb_where the clone
-        // inherited from the caller's in-progress query, so the subquery starts
-        // clean instead of e.g. carrying over the caller's own FROM/WHERE.
-        $subquery_db = clone $this->db;
-        $subquery_db->reset_query();
-        $subquery = new NestedQueryBuilder($subquery_db);
-
-        // Execute callback to build subquery
-        $callback($subquery);
-
-        // Transfer + flush any relation/aggregate state queued directly on
-        // $subquery — see _flush_own_pending_state_into() for why this is needed.
-        $subquery->_flush_own_pending_state_into($subquery_db);
-
-        // Get the compiled subquery
-        $compiled_subquery = $subquery->get_compiled_select();
-
-        // Add OR NOT EXISTS condition
-        $this->db->or_where("NOT EXISTS ({$compiled_subquery})", null, false);
-
-        return $this;
+        return $this->add_where_exists_callback('OR', 'NOT EXISTS', $callback);
     }
 
 
