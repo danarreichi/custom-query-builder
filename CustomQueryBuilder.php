@@ -978,6 +978,11 @@ trait RelationAggregateTrait
     protected $pending_where_queue = [];
 
     /**
+     * @var array Queue of pending order_by_relation() calls (resolved at get() time)
+     */
+    protected $pending_order_by_relations = [];
+
+    /**
      * @var int Depth counter for nested group()/or_group() callbacks.
      * Only meaningful for CustomQueryBuilder; stays 0 for NestedQueryBuilder.
      */
@@ -3731,6 +3736,67 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Order by a column from a related table using a correlated subquery, without JOIN.
+     *
+     * Example:
+     * // Order quotations by marketing name without joining the user table
+     * $this->db->order_by_relation('user', 'iduser', 'quotation.idmarketing', 'name', 'ASC');
+     *
+     * @param string $table Related table name
+     * @param string $foreignKey Column in the related table to match
+     * @param string $localKey Column in the main table (use table prefix to avoid ambiguity, e.g. 'quotation.idmarketing')
+     * @param string $column Column in the related table to order by
+     * @param string $direction ASC or DESC
+     * @return $this
+     */
+    public function order_by_relation($table, $foreignKey, $localKey, $column, $direction = 'ASC')
+    {
+        $direction = strtoupper($direction) === 'DESC' ? 'DESC' : 'ASC';
+        $this->pending_order_by_relations[] = [
+            'table'      => $table,
+            'foreignKey' => $foreignKey,
+            'localKey'   => $localKey,
+            'column'     => $column,
+            'direction'  => $direction,
+            'position'   => count($this->qb_orderby), // capture insertion point now
+        ];
+        return $this;
+    }
+
+    /**
+     * Resolve and apply all pending order_by_relation() calls.
+     * Called at get() time when the parent table name is known.
+     * Entries are spliced into qb_orderby at the position they were registered,
+     * so interleaved order_by() calls preserve their relative order.
+     *
+     * @param string $parent_table
+     */
+    protected function process_pending_order_by_relations($parent_table)
+    {
+        if (empty($this->pending_order_by_relations)) return;
+
+        $inserts = [];
+        foreach ($this->pending_order_by_relations as $rel) {
+            $localKey = strpos($rel['localKey'], '.') !== false
+                ? $rel['localKey']
+                : "{$parent_table}.{$rel['localKey']}";
+            $subquery = "(SELECT {$rel['column']} FROM {$rel['table']} WHERE {$rel['foreignKey']} = {$localKey} LIMIT 1)";
+            $inserts[] = [
+                'position' => $rel['position'],
+                'entry'    => ['field' => "{$subquery} {$rel['direction']}", 'direction' => '', 'escape' => FALSE],
+            ];
+        }
+
+        // Splice from last position to first so earlier indices stay valid
+        usort($inserts, function($a, $b) { return $b['position'] - $a['position']; });
+        foreach ($inserts as $insert) {
+            array_splice($this->qb_orderby, $insert['position'], 0, [$insert['entry']]);
+        }
+
+        $this->pending_order_by_relations = [];
+    }
+
+    /**
      * Order by oldest (ascending)
      * 
      * @param string $column Column to order by (default: 'created_at')
@@ -4266,6 +4332,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
+            $this->process_pending_order_by_relations($parent_table);
         }
         $this->_flush_where_reorder_buffer();
 
@@ -4310,6 +4377,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
+            $this->process_pending_order_by_relations($parent_table);
         }
         $this->_flush_where_reorder_buffer();
 
@@ -4484,6 +4552,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
+            $this->process_pending_order_by_relations($parent_table);
         }
         $this->_flush_where_reorder_buffer();
 
@@ -4522,6 +4591,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->process_pending_where_queue($parent_table);
             $this->process_pending_where_exists($parent_table);
             $this->process_pending_where_aggregates($parent_table);
+            $this->process_pending_order_by_relations($parent_table);
         }
         $this->_flush_where_reorder_buffer();
 
@@ -6636,6 +6706,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->pending_where_aggregates = [];
         $this->pending_where_queue = [];
         $this->pending_groups = [];
+        $this->pending_order_by_relations = [];
         $this->_in_group_context = 0;
         $this->_calc_rows_enabled = false;
         $this->_temp_table_name = null;
