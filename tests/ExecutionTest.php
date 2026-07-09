@@ -335,4 +335,79 @@ class ExecutionTest extends CqbTestCase
             ->get('users');
         $this->assertSame(['Alice', 'Charlie', 'Bob'], array_column($asc->result_array(), 'name'));
     }
+
+    public function test_get_where_applies_array_conditions_directly()
+    {
+        $names = array_column(
+            $this->db->order_by('id', 'ASC')->get_where('users', ['category' => 'A'])->result_array(),
+            'name'
+        );
+        $this->assertSame(['Alice', 'Charlie'], $names);
+    }
+
+    public function test_exists_and_doesnt_exist_reflect_whether_rows_match()
+    {
+        $this->assertTrue($this->db->where('id', 1)->exists('users'));
+        $this->assertFalse($this->db->where('id', 999)->exists('users'));
+
+        $this->db->reset_query();
+
+        $this->assertTrue($this->db->where('id', 999)->doesnt_exist('users'));
+        $this->assertFalse($this->db->where('id', 1)->doesnt_exist('users'));
+    }
+
+    public function test_first_returns_first_row_or_null_when_no_match()
+    {
+        $user = $this->db->where('id', 2)->first('users');
+        $this->assertSame('Bob', $user->name);
+
+        $this->db->reset_query();
+
+        $this->assertNull($this->db->where('id', 999)->first('users'));
+    }
+
+    public function test_get_found_rows_returns_the_backward_compatible_total()
+    {
+        // Old-style usage documented on get_found_rows(): call it on $this->db
+        // right after a calc_rows() query instead of $result->found_rows().
+        $this->db->select(['id', 'name'])->calc_rows()->get('users', 2, 0);
+        $this->assertSame(3, $this->db->get_found_rows());
+    }
+
+    public function test_all_last_query_returns_every_executed_query_including_eager_loading()
+    {
+        $this->db->get('users');
+        $this->assertCount(1, $this->db->all_last_query());
+
+        $this->db->reset_query();
+
+        // Eager loading executes an extra query per relation, so
+        // all_last_query() must report the main query plus the relation query.
+        $this->db->with_one('scores', 'user_id', 'id')->where('id', 1)->get('users');
+        $this->assertCount(2, $this->db->all_last_query());
+    }
+
+    public function test_deferred_condition_as_first_content_inside_a_group_filters_correctly()
+    {
+        // Real-execution counterpart to CompiledSqlTest's SQL-string pin for
+        // the same bug: a deferred where_exists_relation() as the first
+        // content inside a group(), mixed with a no-op when(false) and a
+        // fully-vanishing empty nested group, must not just compile to valid
+        // SQL but actually filter to the right rows.
+        $result = $this->db->select(['id', 'name'])
+            ->where_has('scores', 'user_id', 'id', null, '>=', 1)
+            ->group_start()
+                ->where('name !=', 'Bob')
+                ->group(function ($q) {
+                    $q->when(false, fn ($q) => $q->where('name', 'Heheh'));
+                    $q->group(fn ($q) => $q->when(false, fn ($q) => $q->where('name', 'Hahaha')));
+                    $q->where_exists_relation('profiles', 'user_id', 'id');
+                })
+            ->group_end()
+            ->order_by('id', 'ASC')
+            ->get('users');
+
+        // Alice: has scores, name != Bob, has a profile row -> matches.
+        $this->assertSame(['Alice'], array_column($result->result_array(), 'name'));
+    }
 }

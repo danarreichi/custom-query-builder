@@ -129,6 +129,26 @@ trait RelationAggregateTrait
     }
 
     /**
+     * Same as _qbw_strip_leading_glue(), but for the entry at an arbitrary
+     * position instead of always index 0 — used to strip a wrongly-baked-in
+     * connector from whatever now sits immediately after a group's own
+     * bracket-open entry once that group's deferred conditions (where_has(),
+     * where_aggregate(), etc. registered inside its callback) have been
+     * spliced back into place. Those deferred entries can't reliably know at
+     * capture time whether they'll end up truly first inside the bracket —
+     * see _execute_group_immediately()'s call site for details.
+     *
+     * @param int $pos
+     * @return void
+     */
+    public function _qbw_strip_glue_at($pos)
+    {
+        if (isset($this->qb_where[$pos]['condition'])) {
+            $this->qb_where[$pos]['condition'] = preg_replace('/^(AND |OR )/', '', $this->qb_where[$pos]['condition']);
+        }
+    }
+
+    /**
      * Push one or more qb_where entries into the reorder buffer as a single
      * block — they will be spliced back in together, in the given order,
      * preserving their relative order. A single deferred WHERE condition
