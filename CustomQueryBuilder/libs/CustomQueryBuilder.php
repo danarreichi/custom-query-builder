@@ -3937,7 +3937,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
         error_reporting(E_ALL);
 
         // Set error handler yang agresif
-        $old_error_handler = set_error_handler(function ($errno, $errstr, $errfile, $errline) {
+        set_error_handler(function ($errno, $errstr, $errfile, $errline) {
             throw new ErrorException($errstr, 0, $errno, $errfile, $errline);
         }, E_ALL);
 
@@ -3947,8 +3947,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $exception = null;
 
         try {
-            // Execute callback
-            $result = call_user_func($callback);
+            // BUG FIX: pass $this through so a callback declaring the
+            // documented `function ($db) { ... }` signature (see README's
+            // Transactions section) actually receives it instead of throwing
+            // ArgumentCountError. Callbacks that ignore the parameter (e.g.
+            // via `use ($db)` closures) are unaffected.
+            $result = call_user_func($callback, $this);
         } catch (Exception $e) {
             $exception = $e;
         }
@@ -3956,11 +3960,17 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // Restore error handler dan error reporting
         error_reporting($old_error_reporting);
 
-        if ($old_error_handler !== null) {
-            set_error_handler($old_error_handler);
-        } else {
-            restore_error_handler();
-        }
+        // BUG FIX: set_error_handler() always PUSHES a new handler onto PHP's
+        // internal handler stack — it never replaces the previous one in place.
+        // Calling set_error_handler($old_error_handler) here (the previous code)
+        // pushed yet another frame instead of popping back to it, leaving our
+        // aggressive handler one level further down the stack. The next
+        // *unrelated* restore_error_handler() call anywhere else in the process
+        // (e.g. PHPUnit's own per-test handler teardown) would then pop back
+        // onto our handler, silently turning ordinary deprecation notices
+        // elsewhere into thrown ErrorExceptions. restore_error_handler() is the
+        // only call that correctly pops back to whatever was active before.
+        restore_error_handler();
 
         // Handle PHP Exception yang tertangkap
         if ($exception !== null) {
@@ -4198,6 +4208,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
             if (is_object($query) && method_exists($query, 'result_array')) {
                 return new CustomQueryBuilderResult($query->result_array(), null, $query);
             }
+            return $query;
+        }
+
+        // BUG FIX: a write statement (INSERT/UPDATE/DELETE) makes parent::query()
+        // return a plain bool, not a result object — with_relations pending from
+        // before this call can't apply to it (there are no rows to attach
+        // relations to). Without this check, ->result_array() below was called
+        // directly on that bool, throwing instead of just passing the bool through.
+        if (!is_object($query) || !method_exists($query, 'result_array')) {
+            $this->with_relations = [];
             return $query;
         }
 

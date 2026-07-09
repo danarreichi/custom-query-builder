@@ -1238,6 +1238,17 @@ trait RelationAggregateTrait
             throw new InvalidArgumentException("Invalid operator: {$operator}. Allowed operators: " . implode(', ', $allowed_operators));
         }
 
+        // BUG FIX: BETWEEN/NOT BETWEEN require exactly 2 values. Without this
+        // check, process_pending_where_aggregates() indexes $value[0]/$value[1]
+        // directly — a 1-element array silently compiled to "BETWEEN 1 AND NULL"
+        // (always false, no error) and a 3+ element array silently dropped
+        // everything past the second value, instead of failing loudly.
+        if (in_array($operator, ['BETWEEN', 'NOT BETWEEN'], true)) {
+            if (!is_array($value) || count($value) !== 2) {
+                throw new InvalidArgumentException("Operator '{$operator}' requires \$value to be an array with exactly 2 elements.");
+            }
+        }
+
         // Validate column for non-count types
         if ($type !== 'count' && empty($column)) {
             throw new InvalidArgumentException("Column is required for aggregate type: {$type}");
