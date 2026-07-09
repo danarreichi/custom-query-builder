@@ -137,7 +137,7 @@ Bagian di atas untuk memasang library ini ke aplikasi CodeIgniter 3 milik **kamu
 
 Ada dua sandbox, keduanya memakai file konfigurasi database yang **sama**:
 
-- **`tests/`** — test suite PHPUnit otomatis (49 test) yang memverifikasi string SQL hasil compile secara persis dan hasil query sungguhan. Ini cara tercepat dan paling cocok untuk CI.
+- **`tests/`** — test suite PHPUnit otomatis (117 test) yang memverifikasi string SQL hasil compile secara persis dan hasil query sungguhan. Ini cara tercepat dan paling cocok untuk CI.
 - **`test-ci3/`** — instalasi CodeIgniter 3 lengkap dengan controller smoke-test manual (`Test_custom_qb`) yang menjalankan ~68 skenario dan mencetak output teks polos beserta anotasi `(expect ...)`, bisa dilihat lewat browser.
 
 ### Prasyarat
@@ -177,8 +177,11 @@ vendor/bin/phpunit
 
 ```
 PHPUnit 9.6.35 by Sebastian Bergmann and contributors.
-.................................................                 49 / 49 (100%)
-OK (49 tests, 60 assertions)
+
+...............................................................  63 / 117 ( 55%)
+...................................................             117 / 117 (100%)
+
+OK (117 tests, 171 assertions)
 ```
 
 Lihat [`tests/CompiledSqlTest.php`](tests/CompiledSqlTest.php) (assertion string SQL persis) dan [`tests/ExecutionTest.php`](tests/ExecutionTest.php) (assertion hasil query sungguhan) untuk detail cakupannya.
@@ -560,6 +563,8 @@ $this->db->search('admin', ['role', 'title'], false); // AND, bukan OR
 
 ## Pagination dengan calc_rows()
 
+> **Sudah deprecated di MySQL terbaru.** `calc_rows()`/`get_found_rows()` bergantung pada `SQL_CALC_FOUND_ROWS`, yang oleh MySQL sudah ditandai deprecated sejak versi 8.0.17 dan berpotensi dihapus total di rilis mendatang. Bagian ini tetap didokumentasikan untuk kode lama/eksisting yang sudah memakainya, tapi untuk kode baru lebih baik pakai `count_all_results()` secara terpisah (lihat [Contoh Lengkap](#contoh-lengkap)) — cara ini bekerja di semua versi MySQL, termasuk yang terbaru.
+
 ```php
 $result = $this->db->select(['id', 'name'])
     ->calc_rows()
@@ -576,6 +581,17 @@ $result = $this->db->select(['id', 'name'])
 ```
 
 Menambahkan `SQL_CALC_FOUND_ROWS` di baliknya — satu query memberikan data halaman sekaligus total jumlahnya.
+
+### `get_found_rows()` — cara lama mengambil total (tetap kompatibel)
+
+Sebelum `$result->found_rows()` ada, total-nya diambil langsung dari `$this->db` tepat setelah query `calc_rows()`. Cara ini masih berfungsi, untuk kode yang ditulis dengan API lama tersebut:
+
+```php
+$data  = $this->db->select(['id', 'name'])->calc_rows()->get('users', 20, 0);
+$total = $this->db->get_found_rows();
+```
+
+Untuk kode baru, lebih baik pakai `$result->found_rows()` — dan lebih baik lagi pakai `count_all_results()` daripada keduanya, sesuai catatan deprecation di atas.
 
 ---
 
@@ -596,6 +612,23 @@ $this->db->where('status', 'active')
 ```
 
 `group()`/`or_group()` bekerja dengan benar baik ketika tabel sudah diketahui (`->from('table')` dipanggil dulu) maupun disuplai belakangan (`->get('table')` di akhir chain), dan menjaga posisinya relatif terhadap `where_has()`/`where_exists_relation()`/`where_aggregate()`/`where()` biasa sebelum atau sesudahnya — termasuk saat beberapa di antaranya dicampur dalam query yang sama.
+
+### `group_start()` / `group_end()` — pasangan mentah, untuk kontrol manual
+
+`group()`/`or_group()` di atas sebenarnya adalah pembungkus berbasis callback di atas pasangan mentah ini. Pakai `group_start()`/`group_end()` langsung kalau kamu perlu membuka dan menutup kurung di dua titik kode yang berbeda (misalnya melewati sebuah `if`), bukan di dalam satu callback saja:
+
+```php
+$this->db->where('status', 'active')->group_start();
+
+if ($include_pending) {
+    $this->db->or_where('status', 'pending');
+}
+
+$this->db->where('archived', 0)->group_end();
+// WHERE `status` = 'active' AND ( `status` = 'pending' AND `archived` = 0 )
+```
+
+Kalau ternyata tidak ada apa pun yang ditambahkan di antara `group_start()` dan `group_end()`, kurung kosongnya otomatis dibuang alih-alih menghasilkan SQL `( )` yang tidak valid. Bisa disarangkan bebas dengan dirinya sendiri, dengan `group()`/`or_group()`, dan dengan `where_has()`/`where_exists_relation()`/`where_aggregate()` dalam kombinasi apa pun.
 
 ---
 
@@ -713,7 +746,7 @@ $users = $this->db->with_count('orders', 'user_id', 'id')
 $users = $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id')->get();
 ```
 
-**Gunakan `calc_rows()` untuk pagination** daripada memanggil `count_all_results()` secara terpisah.
+**Prioritaskan panggilan `count_all_results()` terpisah daripada `calc_rows()`** untuk total pagination — `calc_rows()` bergantung pada `SQL_CALC_FOUND_ROWS` milik MySQL yang sudah deprecated (lihat [Pagination dengan calc_rows()](#pagination-dengan-calc_rows)).
 
 **Prioritaskan `join_*` daripada agregat `with_*` pada result set besar** — satu scan `GROUP BY` daripada N subquery berkorelasi.
 
@@ -731,7 +764,8 @@ $search    = $this->input->get('search');
 $status    = $this->input->get('status');
 $min_orders = $this->input->get('min_orders');
 
-$result = $this->db->select(['id', 'name', 'email', 'created_at'])
+$query = $this->db->select(['id', 'name', 'email', 'created_at'])
+    ->from('users')
     ->with_one('profiles', 'user_id', 'id', function ($q) {
         $q->select('user_id, avatar, bio');
     })
@@ -748,13 +782,14 @@ $result = $this->db->select(['id', 'name', 'email', 'created_at'])
         $q->where_has('orders', 'user_id', 'id', null, '>=', $min_orders);
     })
     ->where_not_null('email_verified_at')
-    ->where_not('status', 'deleted')
-    ->order_by('total_spent', 'DESC')
-    ->calc_rows()
-    ->get('users', $per_page, $offset);
+    ->where_not('status', 'deleted');
 
-$data  = $result->result();
-$total = $result->found_rows();
+// Catatan: karena tabel sudah diset lewat from() di atas, jangan kirim nama
+// tabel lagi ke dua pemanggilan di bawah — kalau dikirim ke keduanya, `users`
+// akan muncul dua kali di query.
+$total  = $query->count_all_results('', false); // false = pertahankan kondisi untuk query di bawah
+$result = $query->order_by('total_spent', 'DESC')->get('', $per_page, $offset);
+$data   = $result->result();
 
 foreach ($data as $user) {
     echo "{$user->name}: {$user->orders_count} pesanan, {$user->total_spent} dibelanjakan\n";

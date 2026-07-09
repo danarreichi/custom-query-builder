@@ -137,7 +137,7 @@ The section above is for wiring this library into your **own** CodeIgniter 3 app
 
 There are two sandboxes, both driven by the **same** database config file:
 
-- **`tests/`** — an automated PHPUnit suite (49 tests) that asserts exact compiled SQL strings and real query results. This is the fast, CI-friendly way to verify the library works.
+- **`tests/`** — an automated PHPUnit suite (117 tests) that asserts exact compiled SQL strings and real query results. This is the fast, CI-friendly way to verify the library works.
 - **`test-ci3/`** — a full CodeIgniter 3 install with a manual smoke-test controller (`Test_custom_qb`) that exercises ~68 scenarios and prints plain-text output with `(expect ...)` annotations, viewable in a browser.
 
 ### Prerequisites
@@ -177,8 +177,11 @@ vendor/bin/phpunit
 
 ```
 PHPUnit 9.6.35 by Sebastian Bergmann and contributors.
-.................................................                 49 / 49 (100%)
-OK (49 tests, 60 assertions)
+
+...............................................................  63 / 117 ( 55%)
+...................................................             117 / 117 (100%)
+
+OK (117 tests, 171 assertions)
 ```
 
 See [`tests/CompiledSqlTest.php`](tests/CompiledSqlTest.php) (exact-SQL-string assertions) and [`tests/ExecutionTest.php`](tests/ExecutionTest.php) (real query-result assertions) for what's covered.
@@ -560,6 +563,8 @@ $this->db->search('admin', ['role', 'title'], false); // AND instead of OR
 
 ## Pagination with calc_rows()
 
+> **Deprecated in modern MySQL.** `calc_rows()`/`get_found_rows()` rely on `SQL_CALC_FOUND_ROWS`, which MySQL deprecated as of 8.0.17 and may remove entirely in a future release. They're documented here for existing/legacy code that already uses them, but for new code prefer a separate `count_all_results()` call (see [Complete Example](#complete-example)) — it works on every MySQL version, including current ones.
+
 ```php
 $result = $this->db->select(['id', 'name'])
     ->calc_rows()
@@ -576,6 +581,17 @@ $result = $this->db->select(['id', 'name'])
 ```
 
 Adds `SQL_CALC_FOUND_ROWS` under the hood — one query gets you both the page of data and the total count.
+
+### `get_found_rows()` — old-style access to the total (backward compatible)
+
+Before `$result->found_rows()` existed, the total was read straight off `$this->db` right after the `calc_rows()` query. This still works, for code written against that older API:
+
+```php
+$data  = $this->db->select(['id', 'name'])->calc_rows()->get('users', 20, 0);
+$total = $this->db->get_found_rows();
+```
+
+Prefer `$result->found_rows()` in new code — and prefer `count_all_results()` over both in new code, per the deprecation note above.
 
 ---
 
@@ -596,6 +612,23 @@ $this->db->where('status', 'active')
 ```
 
 `group()`/`or_group()` work correctly whether the table is already known (`->from('table')` called first) or supplied later (`->get('table')` at the end of the chain), and preserve their position relative to any `where_has()`/`where_exists_relation()`/`where_aggregate()`/plain `where()` calls before or after them — including when several of those are mixed together in the same query.
+
+### `group_start()` / `group_end()` — the raw pair, for manual control
+
+`group()`/`or_group()` above are a callback-based wrapper around this raw pair. Reach for `group_start()`/`group_end()` directly when you need to open and close the bracket at two different points in your code (e.g. across an `if`), instead of inside a single callback:
+
+```php
+$this->db->where('status', 'active')->group_start();
+
+if ($include_pending) {
+    $this->db->or_where('status', 'pending');
+}
+
+$this->db->where('archived', 0)->group_end();
+// WHERE `status` = 'active' AND ( `status` = 'pending' AND `archived` = 0 )
+```
+
+If nothing ends up added between `group_start()` and `group_end()`, the empty bracket is dropped automatically instead of producing invalid `( )` SQL. Nests freely with itself, with `group()`/`or_group()`, and with `where_has()`/`where_exists_relation()`/`where_aggregate()` in any combination.
 
 ---
 
@@ -713,7 +746,7 @@ $users = $this->db->with_count('orders', 'user_id', 'id')
 $users = $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id')->get();
 ```
 
-**Use `calc_rows()` for pagination** instead of a separate `count_all_results()` call.
+**Prefer a separate `count_all_results()` call over `calc_rows()`** for pagination totals — `calc_rows()` depends on MySQL's deprecated `SQL_CALC_FOUND_ROWS` (see [Pagination with calc_rows()](#pagination-with-calc_rows)).
 
 **Prefer `join_*` over `with_*` aggregates on large result sets** — one `GROUP BY` scan instead of N correlated subqueries.
 
@@ -731,7 +764,8 @@ $search    = $this->input->get('search');
 $status    = $this->input->get('status');
 $min_orders = $this->input->get('min_orders');
 
-$result = $this->db->select(['id', 'name', 'email', 'created_at'])
+$query = $this->db->select(['id', 'name', 'email', 'created_at'])
+    ->from('users')
     ->with_one('profiles', 'user_id', 'id', function ($q) {
         $q->select('user_id, avatar, bio');
     })
@@ -748,13 +782,13 @@ $result = $this->db->select(['id', 'name', 'email', 'created_at'])
         $q->where_has('orders', 'user_id', 'id', null, '>=', $min_orders);
     })
     ->where_not_null('email_verified_at')
-    ->where_not('status', 'deleted')
-    ->order_by('total_spent', 'DESC')
-    ->calc_rows()
-    ->get('users', $per_page, $offset);
+    ->where_not('status', 'deleted');
 
-$data  = $result->result();
-$total = $result->found_rows();
+// Note: with the table already set via from() above, pass no table name to
+// either call below — passing it to both would add `users` to the query twice.
+$total  = $query->count_all_results('', false); // false = keep the conditions for the query below
+$result = $query->order_by('total_spent', 'DESC')->get('', $per_page, $offset);
+$data   = $result->result();
 
 foreach ($data as $user) {
     echo "{$user->name}: {$user->orders_count} orders, {$user->total_spent} spent\n";
