@@ -129,46 +129,6 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected $_deferred_snapshot_stack = [];
 
-    /**
-     * Get the parent table name or alias from current query
-     * 
-     * This helper function extracts the main table name/alias from the current query builder state.
-     * Used by where_exists_relation() to automatically determine the parent table.
-     * Returns the alias if present, otherwise returns the table name.
-     * 
-     * @param string $table_from_get Optional table name from get() method
-     * @return string|null Parent table name/alias or null if not found
-     */
-    protected function pending_where_exists_relation($table_from_get = null)
-    {
-        // First priority: table passed to get() method parameter
-        if (!empty($table_from_get)) {
-            return $this->extract_table_or_alias($table_from_get);
-        }
-
-        // Second priority: temporary table name from get() method
-        if (!empty($this->_temp_table_name)) {
-            return $this->extract_table_or_alias($this->_temp_table_name);
-        }
-
-        // Third priority: try to get from compiled select to extract table name/alias
-        try {
-            $compiled = $this->get_compiled_select('', false); // Don't reset
-
-            // Extract table name and alias from FROM clause using regex
-            // Pattern matches: FROM `table` `alias` or FROM table alias or FROM `table` AS `alias`
-            if (preg_match('/FROM\s+`?([a-zA-Z_][a-zA-Z0-9_]*)`?(?:\s+(?:AS\s+)?`?([a-zA-Z_][a-zA-Z0-9_]*)`?)?/i', $compiled, $matches)) {
-                // Return alias if it exists (matches[2]), otherwise return table name (matches[1])
-                return !empty($matches[2]) ? $matches[2] : $matches[1];
-            }
-        } catch (Exception $e) {
-            // Fallback: if no FROM is set yet, return null
-            return null;
-        }
-
-        return null;
-    }
-
     // =================================================================
     // PARENT METHOD OVERRIDES FOR PROPER TYPE CHAINING IN IDE
     // =================================================================
