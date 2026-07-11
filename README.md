@@ -4,6 +4,8 @@ A drop-in, backward-compatible extension of CodeIgniter 3's Query Builder that a
 
 *(Versi Bahasa Indonesia: [README.id.md](README.id.md))*
 
+> **Complete API reference:** every one of this library's 99 public methods, fully documented (signature, parameters, return type, examples, notes) — see [`docs/USAGE.md`](docs/USAGE.md). If you use Claude Code, Claude Desktop, or another MCP-compatible AI assistant, [`mcp-server/`](mcp-server/) exposes that same reference as MCP tools (`list_methods`, `get_method`, `search_methods`, ...) so your assistant can look up exact signatures instead of guessing — read-only, it never touches a database. See [`mcp-server/README.md`](mcp-server/README.md) for setup.
+
 ## Table of Contents
 
 1. [Installation](#installation)

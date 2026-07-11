@@ -4,6 +4,8 @@ Ekstensi drop-in dan backward-compatible untuk Query Builder CodeIgniter 3 yang 
 
 *(English version: [README.md](README.md))*
 
+> **Referensi API lengkap:** ke-99 method publik library ini, semuanya terdokumentasi lengkap (signature, parameter, tipe return, contoh, catatan) — lihat [`docs/USAGE.md`](docs/USAGE.md). Kalau kamu pakai Claude Code, Claude Desktop, atau AI assistant lain yang kompatibel MCP, [`mcp-server/`](mcp-server/) menyediakan referensi yang sama sebagai tools MCP (`list_methods`, `get_method`, `search_methods`, ...) supaya assistant-mu bisa cari signature yang tepat, bukan menebak — read-only, tidak pernah menyentuh database. Lihat [`mcp-server/README.md`](mcp-server/README.md) untuk cara setup-nya.
+
 ## Daftar Isi
 
 1. [Instalasi](#instalasi)

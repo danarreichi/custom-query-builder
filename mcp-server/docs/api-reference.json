@@ -1,0 +1,1445 @@
+{
+  "library": "CustomQueryBuilder",
+  "version": "1.0.0",
+  "description": "A drop-in, backward-compatible extension of CodeIgniter 3's Query Builder that adds Laravel-inspired features: eager loading, aggregate subqueries, WHERE EXISTS/WHERE HAS conditions, chunking, pagination, and more — while remaining 100% compatible with every existing $this->db->... call. PHP 5.6+ compatible. Identifier quoting is driver-aware (verified on mysqli and sqlite3).",
+  "categories": [
+    { "id": "core-query", "name": "Core Query Building", "description": "select/where/order/limit and related basics, mostly thin CI3-compatible overrides plus a handful of new shorthand helpers." },
+    { "id": "execution", "name": "Query Execution & Results", "description": "Methods that actually run a query (get/get_where/first/value/exists/count_all_results/query) and utility accessors (all_last_query/reset_query/pluck)." },
+    { "id": "eager-loading", "name": "Eager Loading Relations", "description": "Load related-table rows onto each result row without N+1 queries (Laravel-style with())." },
+    { "id": "aggregates", "name": "Aggregate Subqueries", "description": "Add a correlated subquery column (COUNT/SUM/AVG/MIN/MAX/custom expression) per row, and filter on the result with where_aggregate()." },
+    { "id": "join-aggregates", "name": "JOIN-Based Aggregates", "description": "Lighter alternative to aggregates: one GROUP BY derived-table JOIN instead of one correlated subquery per row." },
+    { "id": "where-exists-has", "name": "WHERE EXISTS / WHERE HAS", "description": "Existence and count-threshold conditions against a related table, with call-order-preserving AND/OR glue." },
+    { "id": "conditional", "name": "Conditional Queries", "description": "Build dynamic filter chains without a wall of if-statements." },
+    { "id": "search", "name": "Search", "description": "Multi-column LIKE search shorthand." },
+    { "id": "pagination", "name": "Pagination", "description": "Page-based pagination (paginate()) and the lower-level found-rows counting it's built on (calc_rows()), both using a portable COUNT(*) subquery on every driver." },
+    { "id": "grouping", "name": "Query Grouping", "description": "Parenthesized WHERE groups, callback-based or raw start/end pairs, correctly interleaved with every other condition type." },
+    { "id": "chunking", "name": "Chunking Large Datasets", "description": "Process large tables in pages without loading everything into memory at once." },
+    { "id": "transactions", "name": "Transactions", "description": "Callback-based transaction wrapper with automatic commit/rollback." },
+    { "id": "advanced", "name": "Advanced: Manual Flush", "description": "Force-resolve pending (deferred) conditions early, inside a callback context, instead of waiting for get() time. Rarely needed directly — get()/get_compiled_select() call these automatically." },
+    { "id": "result", "name": "The Result Object (CustomQueryBuilderResult)", "description": "What get()/get_where()/query() return: a CI-result-compatible wrapper with extra methods for relations, found-rows, and pagination." }
+  ],
+  "methods": [
+    {
+      "name": "select",
+      "category": "core-query",
+      "signature": "select($select = '*', $escape = null)",
+      "description": "Thin override of CI3's native select() (kept mainly for IDE return-type chaining). Accepts a comma-separated string or an array of column names/expressions, exactly like stock CodeIgniter.",
+      "parameters": [
+        { "name": "select", "type": "string|array", "default": "'*'", "description": "Column(s) to select." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false to insert a raw expression (e.g. a subquery or SQL function) without identifier-escaping." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Array select", "code": "$this->db->select(['id', 'name'])->get('users');" },
+        { "description": "Raw expression (escape=false)", "code": "$this->db->select('COUNT(*) as total', false)->get('orders');" }
+      ],
+      "notes": ["Calling select() again appends fields rather than replacing (native CI3 behavior)."],
+      "see_also": ["add_select"]
+    },
+    {
+      "name": "add_select",
+      "category": "core-query",
+      "signature": "add_select($select = '', $escape = null)",
+      "description": "Alias for select() — documented separately for readability when you want to signal \"add more columns to whatever's already selected\", but is functionally identical (CI3's select() already appends).",
+      "parameters": [
+        { "name": "select", "type": "string|array", "default": "''", "description": "Additional column(s) to select." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false for a raw expression." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Add a column after an initial select", "code": "$this->db->select('id')->add_select('name')->get('users');" }],
+      "notes": [],
+      "see_also": ["select"]
+    },
+    {
+      "name": "from",
+      "category": "core-query",
+      "signature": "from($from)",
+      "description": "Override of CI3's from(). Detects a raw subquery given as a string in the form \"(SELECT ...) alias\" and injects it directly into the internal FROM list (bypassing CI's identifier escaping, which would otherwise mangle the already-compiled SQL). Also records the table name internally for use by pending where_exists_relation()/relation processors. Array input mixing subqueries and plain table names is handled per-element.",
+      "parameters": [{ "name": "from", "type": "string|array", "default": null, "description": "Table name, \"table alias\", or a raw \"(SELECT ...) alias\" subquery string (or an array of these)." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Plain table", "code": "$this->db->from('users')->where('status', 'active')->get();" }],
+      "notes": [],
+      "see_also": ["join"]
+    },
+    {
+      "name": "join",
+      "category": "core-query",
+      "signature": "join($table, $cond, $type = '', $escape = null)",
+      "description": "Thin passthrough override of CI3's native join() (kept for IDE return-type chaining only — no added behavior).",
+      "parameters": [
+        { "name": "table", "type": "string", "default": null, "description": "Table to join." },
+        { "name": "cond", "type": "string", "default": null, "description": "ON condition." },
+        { "name": "type", "type": "string", "default": "''", "description": "'left', 'right', 'inner', etc." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false for a raw ON condition." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Left join", "code": "$this->db->select(['users.id'])->join('scores', 'scores.user_id = users.id')->get('users');" }],
+      "notes": [],
+      "see_also": ["from"]
+    },
+    {
+      "name": "limit",
+      "category": "core-query",
+      "signature": "limit($value, $offset = 0)",
+      "description": "Thin passthrough override of CI3's native limit() (IDE return-type chaining only).",
+      "parameters": [
+        { "name": "value", "type": "int", "default": null, "description": "Row limit." },
+        { "name": "offset", "type": "int", "default": "0", "description": "Rows to skip." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Limit with offset", "code": "$this->db->limit(20, 40)->get('users'); // rows 41-60" }],
+      "notes": ["Usually you pass limit/offset directly to get($table, $limit, $offset) instead of calling this separately."],
+      "see_also": ["get", "paginate"]
+    },
+    {
+      "name": "order_by",
+      "category": "core-query",
+      "signature": "order_by($orderby, $direction = '', $escape = null)",
+      "description": "Thin passthrough override of CI3's native order_by() (IDE return-type chaining only).",
+      "parameters": [
+        { "name": "orderby", "type": "string", "default": null, "description": "Column name, or a raw expression." },
+        { "name": "direction", "type": "string", "default": "''", "description": "'ASC', 'DESC', or 'RANDOM'." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false for a raw expression." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Basic ordering", "code": "$this->db->order_by('created_at', 'DESC')->get('posts');" }],
+      "notes": [],
+      "see_also": ["order_by_sequence", "order_by_relation", "latest", "oldest"]
+    },
+    {
+      "name": "group_by",
+      "category": "core-query",
+      "signature": "group_by($by, $escape = null)",
+      "description": "Thin passthrough override of CI3's native group_by() (IDE return-type chaining only).",
+      "parameters": [
+        { "name": "by", "type": "string|array", "default": null, "description": "Column(s) to group by." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false for a raw expression." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Group by category", "code": "$this->db->select('category, COUNT(*) as total')->group_by('category')->get('users');" }],
+      "notes": [],
+      "see_also": []
+    },
+    {
+      "name": "latest",
+      "category": "core-query",
+      "signature": "latest($column = 'created_at')",
+      "description": "Shorthand for order_by($column, 'DESC').",
+      "parameters": [{ "name": "column", "type": "string", "default": "'created_at'", "description": "Column to order by." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Newest first", "code": "$this->db->latest('created_at')->get('posts');" }],
+      "notes": [],
+      "see_also": ["oldest", "order_by"]
+    },
+    {
+      "name": "oldest",
+      "category": "core-query",
+      "signature": "oldest($column = 'created_at')",
+      "description": "Shorthand for order_by($column, 'ASC').",
+      "parameters": [{ "name": "column", "type": "string", "default": "'created_at'", "description": "Column to order by." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Oldest first", "code": "$this->db->oldest('created_at')->get('posts');" }],
+      "notes": [],
+      "see_also": ["latest", "order_by"]
+    },
+    {
+      "name": "where_not",
+      "category": "core-query",
+      "signature": "where_not($column, $value)",
+      "description": "Adds a `column != value` condition (value is escaped; column is protected/quoted).",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column name." },
+        { "name": "value", "type": "mixed", "default": null, "description": "Value to exclude." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Exclude deleted rows", "code": "$this->db->where_not('status', 'deleted');\n// WHERE `status` != 'deleted'" }],
+      "notes": [],
+      "see_also": ["or_where_not"]
+    },
+    {
+      "name": "or_where_not",
+      "category": "core-query",
+      "signature": "or_where_not($column, $value)",
+      "description": "OR-variant of where_not() — adds `OR column != value`.",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column name." },
+        { "name": "value", "type": "mixed", "default": null, "description": "Value to exclude." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "OR condition", "code": "$this->db->where('id', 1)->or_where_not('category', 'A');" }],
+      "notes": [],
+      "see_also": ["where_not"]
+    },
+    {
+      "name": "where_null",
+      "category": "core-query",
+      "signature": "where_null($column)",
+      "description": "Adds a `column IS NULL` condition.",
+      "parameters": [{ "name": "column", "type": "string", "default": null, "description": "Column name." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Not-yet-deleted rows", "code": "$this->db->where_null('deleted_at')->get('posts');" }],
+      "notes": [],
+      "see_also": ["where_not_null", "or_where_null"]
+    },
+    {
+      "name": "or_where_null",
+      "category": "core-query",
+      "signature": "or_where_null($column)",
+      "description": "OR-variant of where_null().",
+      "parameters": [{ "name": "column", "type": "string", "default": null, "description": "Column name." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('id', 1)->or_where_null('deleted_at');" }],
+      "notes": [],
+      "see_also": ["where_null"]
+    },
+    {
+      "name": "where_not_null",
+      "category": "core-query",
+      "signature": "where_not_null($column)",
+      "description": "Adds a `column IS NOT NULL` condition.",
+      "parameters": [{ "name": "column", "type": "string", "default": null, "description": "Column name." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Verified emails only", "code": "$this->db->where_not_null('email_verified_at')->get('users');" }],
+      "notes": [],
+      "see_also": ["where_null", "or_where_not_null"]
+    },
+    {
+      "name": "or_where_not_null",
+      "category": "core-query",
+      "signature": "or_where_not_null($column)",
+      "description": "OR-variant of where_not_null().",
+      "parameters": [{ "name": "column", "type": "string", "default": null, "description": "Column name." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('id', 1)->or_where_not_null('email_verified_at');" }],
+      "notes": [],
+      "see_also": ["where_not_null"]
+    },
+    {
+      "name": "where_between",
+      "category": "core-query",
+      "signature": "where_between($column, array $values)",
+      "description": "Adds a `column BETWEEN v1 AND v2` condition. Both bounds are escaped individually. Throws InvalidArgumentException if $values doesn't have exactly 2 elements.",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column name." },
+        { "name": "values", "type": "array", "default": null, "description": "Exactly [min, max]." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Age range", "code": "$this->db->where_between('age', [18, 65]);\n// WHERE `age` BETWEEN 18 AND 65" }],
+      "notes": ["Throws InvalidArgumentException if the array doesn't have exactly 2 elements."],
+      "see_also": ["where_not_between", "or_where_between"]
+    },
+    {
+      "name": "or_where_between",
+      "category": "core-query",
+      "signature": "or_where_between($column, array $values)",
+      "description": "OR-variant of where_between().",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column name." },
+        { "name": "values", "type": "array", "default": null, "description": "Exactly [min, max]." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('id', 1)->or_where_between('age', [18, 25]);" }],
+      "notes": [],
+      "see_also": ["where_between"]
+    },
+    {
+      "name": "where_not_between",
+      "category": "core-query",
+      "signature": "where_not_between($column, array $values)",
+      "description": "Adds a `column NOT BETWEEN v1 AND v2` condition. Same validation as where_between().",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column name." },
+        { "name": "values", "type": "array", "default": null, "description": "Exactly [min, max]." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Exclude a price range", "code": "$this->db->where_not_between('price', [100, 500]);" }],
+      "notes": [],
+      "see_also": ["where_between", "or_where_not_between"]
+    },
+    {
+      "name": "or_where_not_between",
+      "category": "core-query",
+      "signature": "or_where_not_between($column, array $values)",
+      "description": "OR-variant of where_not_between().",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column name." },
+        { "name": "values", "type": "array", "default": null, "description": "Exactly [min, max]." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('id', 1)->or_where_not_between('price', [100, 500]);" }],
+      "notes": [],
+      "see_also": ["where_not_between"]
+    },
+    {
+      "name": "where_in",
+      "category": "core-query",
+      "signature": "where_in($key = null, $values = null, $escape = null)",
+      "description": "Override of CI3's native where_in(). Numeric arrays are cast via intval() (unquoted); string arrays are escaped individually. Manually replicates CI's AND/OR glue-prefix logic, correctly accounting for this library's deferred-condition machinery. Avoids a PCRE \"regular expression is too large\" failure CI3's own regex-based validation can throw on very large value lists.",
+      "parameters": [
+        { "name": "key", "type": "string", "default": "null", "description": "Column name." },
+        { "name": "values", "type": "array", "default": "null", "description": "Values for the IN list." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false to insert values as-is (caller's responsibility to sanitize)." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Basic IN", "code": "$this->db->where_in('id', [1, 2, 3])->get('users');" }],
+      "notes": ["Throws InvalidArgumentException if $key fails column-name validation.", "If $values isn't an array or is empty, delegates straight to CI3's native where_in() (same error/behavior as stock CI3)."],
+      "see_also": ["or_where_in", "where_not_in", "or_where_not_in"]
+    },
+    {
+      "name": "or_where_in",
+      "category": "core-query",
+      "signature": "or_where_in($key = null, $values = null, $escape = null)",
+      "description": "OR-variant of where_in().",
+      "parameters": [
+        { "name": "key", "type": "string", "default": "null", "description": "Column name." },
+        { "name": "values", "type": "array", "default": "null", "description": "Values for the IN list." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false to insert values as-is." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('id', 1)->or_where_in('id', [2, 3]);" }],
+      "notes": [],
+      "see_also": ["where_in"]
+    },
+    {
+      "name": "where_not_in",
+      "category": "core-query",
+      "signature": "where_not_in($key = null, $values = null, $escape = null)",
+      "description": "Adds a `column NOT IN (...)` condition. Same escaping/validation approach as where_in().",
+      "parameters": [
+        { "name": "key", "type": "string", "default": "null", "description": "Column name." },
+        { "name": "values", "type": "array", "default": "null", "description": "Values to exclude." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false to insert values as-is." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where_not_in('id', [1, 2]);" }],
+      "notes": [],
+      "see_also": ["where_in", "or_where_not_in"]
+    },
+    {
+      "name": "or_where_not_in",
+      "category": "core-query",
+      "signature": "or_where_not_in($key = null, $values = null, $escape = null)",
+      "description": "OR-variant of where_not_in().",
+      "parameters": [
+        { "name": "key", "type": "string", "default": "null", "description": "Column name." },
+        { "name": "values", "type": "array", "default": "null", "description": "Values to exclude." },
+        { "name": "escape", "type": "bool|null", "default": "null", "description": "Pass false to insert values as-is." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('id', 1)->or_where_not_in('id', [2, 3]);" }],
+      "notes": [],
+      "see_also": ["where_not_in"]
+    },
+    {
+      "name": "order_by_sequence",
+      "category": "core-query",
+      "signature": "order_by_sequence($column, array $array)",
+      "description": "Custom manual ordering: builds a `CASE WHEN col = 'v0' THEN 0 WHEN col = 'v1' THEN 1 ... ELSE N END` expression internally and passes it to order_by(). Rows whose value isn't in $array sort last (ELSE branch).",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column to order by (word chars + one optional dot)." },
+        { "name": "array", "type": "array", "default": null, "description": "Ordered list of values defining the desired sequence." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Priority ordering", "code": "$this->db->order_by_sequence('priority', ['high', 'medium', 'low']);" }],
+      "notes": ["Throws InvalidArgumentException if $array is empty/not an array or $column fails validation."],
+      "see_also": ["order_by", "order_by_relation"]
+    },
+    {
+      "name": "order_by_relation",
+      "category": "core-query",
+      "signature": "order_by_relation($table, $foreignKey, $localKey, $column, $direction = 'ASC')",
+      "description": "Order by a column from a related table using a correlated subquery, without a JOIN. Registers a deferred ORDER BY resolved at get()/get_compiled_select() time, spliced back into the ORDER BY clause at its original call-order position (so it interleaves correctly with plain order_by() calls). All identifier arguments are validated.",
+      "parameters": [
+        { "name": "table", "type": "string", "default": null, "description": "Related table name." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column in the related table to match." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column in the main table (qualify with a table prefix to avoid ambiguity, e.g. 'quotation.idmarketing')." },
+        { "name": "column", "type": "string", "default": null, "description": "Column in the related table to order by." },
+        { "name": "direction", "type": "string", "default": "'ASC'", "description": "'ASC' or 'DESC' (anything else normalizes to ASC)." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Order by a related user's name, without a JOIN", "code": "$this->db->order_by_relation('user', 'iduser', 'quotation.idmarketing', 'name', 'ASC');" }],
+      "notes": ["Underlying subquery uses a bare LIMIT 1 (not portable to SQL Server/Oracle syntax — fine on MySQL/SQLite/Postgres)."],
+      "see_also": ["order_by", "order_by_sequence"]
+    },
+    {
+      "name": "get",
+      "category": "execution",
+      "signature": "get($table = '', $limit = null, $offset = null)",
+      "description": "Executes the query and returns a CustomQueryBuilderResult. Automatically resolves any pending eager-loading relations, aggregate subqueries, WHERE EXISTS/HAS conditions, groups, and calc_rows()/paginate() found-rows counting before compiling. This is the terminal call for almost every query chain in this library.",
+      "parameters": [
+        { "name": "table", "type": "string", "default": "''", "description": "Table name (optional if from() was already called)." },
+        { "name": "limit", "type": "int|null", "default": "null", "description": "Row limit." },
+        { "name": "offset", "type": "int|null", "default": "null", "description": "Rows to skip." }
+      ],
+      "returns": { "type": "CustomQueryBuilderResult", "description": "See the Result Object category." },
+      "examples": [{ "description": "Basic get", "code": "$result = $this->db->select(['id', 'name'])->where('status', 'active')->get('users');" }],
+      "notes": ["If paginate() was called and $limit is left null here, get() computes LIMIT/OFFSET from the page/per_page you passed to paginate() — an explicit $limit/$offset here always overrides that."],
+      "see_also": ["get_where", "paginate", "calc_rows"]
+    },
+    {
+      "name": "get_where",
+      "category": "execution",
+      "signature": "get_where($table = '', $where = null, $limit = null, $offset = null)",
+      "description": "Convenience wrapper: applies from(), where($where) (if an array is given), limit() (if given), then delegates to get() if any relation/aggregate/group state is pending, or runs a lightweight direct query otherwise.",
+      "parameters": [
+        { "name": "table", "type": "string", "default": "''", "description": "Table name." },
+        { "name": "where", "type": "array|null", "default": "null", "description": "Associative array of column => value conditions." },
+        { "name": "limit", "type": "int|null", "default": "null", "description": "Row limit." },
+        { "name": "offset", "type": "int|null", "default": "null", "description": "Rows to skip." }
+      ],
+      "returns": { "type": "CustomQueryBuilderResult", "description": "" },
+      "examples": [{ "description": "Direct array conditions", "code": "$this->db->get_where('users', ['category' => 'A']);" }],
+      "notes": [],
+      "see_also": ["get"]
+    },
+    {
+      "name": "first",
+      "category": "execution",
+      "signature": "first($table = '')",
+      "description": "limit(1)->get($table), then returns row() (an object) if any row matched, otherwise null.",
+      "parameters": [{ "name": "table", "type": "string", "default": "''", "description": "Table name." }],
+      "returns": { "type": "object|null", "description": "The first matching row, or null." },
+      "examples": [{ "description": "", "code": "$user = $this->db->where('email', 'john@example.com')->first('users');\nif ($user) { echo $user->name; }" }],
+      "notes": [],
+      "see_also": ["value", "exists"]
+    },
+    {
+      "name": "value",
+      "category": "execution",
+      "signature": "value($column, $table = '')",
+      "description": "Pre-execution shortcut: runs select($column)->limit(1)->get($table)->row() and pulls just that one column's value, more efficient than fetching a full row you only need one field from (adds an implicit LIMIT 1). Handles dotted table.column by taking the part after the last dot.",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column to fetch." },
+        { "name": "table", "type": "string", "default": "''", "description": "Table name." }
+      ],
+      "returns": { "type": "mixed|null", "description": "The column's value, or null if no row matched." },
+      "examples": [{ "description": "", "code": "$email = $this->db->where('id', 1)->value('email', 'users');\n// Equivalent to: SELECT `email` FROM users WHERE id = 1 LIMIT 1" }],
+      "notes": ["Throws InvalidArgumentException if $column fails column-name validation.", "There is also a post-execution $result->value($column) on CustomQueryBuilderResult, which pulls from an already-fetched row instead of running a new query."],
+      "see_also": ["first"]
+    },
+    {
+      "name": "exists",
+      "category": "execution",
+      "signature": "exists($table = '')",
+      "description": "limit(1)->get($table), returns whether any row matched.",
+      "parameters": [{ "name": "table", "type": "string", "default": "''", "description": "Table name." }],
+      "returns": { "type": "bool", "description": "True if at least one row matches." },
+      "examples": [{ "description": "", "code": "if ($this->db->where('email', $email)->exists('users')) { /* ... */ }" }],
+      "notes": [],
+      "see_also": ["doesnt_exist"]
+    },
+    {
+      "name": "doesnt_exist",
+      "category": "execution",
+      "signature": "doesnt_exist($table = '')",
+      "description": "Inverse of exists() — !exists($table).",
+      "parameters": [{ "name": "table", "type": "string", "default": "''", "description": "Table name." }],
+      "returns": { "type": "bool", "description": "True if no row matches." },
+      "examples": [{ "description": "", "code": "if ($this->db->where('status', 'deleted')->doesnt_exist('users')) { /* ... */ }" }],
+      "notes": [],
+      "see_also": ["exists"]
+    },
+    {
+      "name": "count_all_results",
+      "category": "execution",
+      "signature": "count_all_results($table = '', $reset = true)",
+      "description": "Flushes all pending query state, temporarily strips eager-loading relations (a count doesn't need them), and delegates to CI3's native count_all_results(). Ignores eager-loading by design — counts the base query only; aggregate subqueries (with_count/with_sum/etc.) still apply since those live in SELECT/WHERE, not the separate eager-loading pipeline.",
+      "parameters": [
+        { "name": "table", "type": "string", "default": "''", "description": "Table name." },
+        { "name": "reset", "type": "bool", "default": "true", "description": "Whether to reset query state afterward. Pass false to keep the current WHERE conditions for a following get() call on the same builder (e.g. building a paginated total + page from the same filters)." }
+      ],
+      "returns": { "type": "int", "description": "Row count." },
+      "examples": [{ "description": "Total + page from the same filters", "code": "$total = $query->count_all_results('', false); // keep conditions\n$result = $query->get('', 20, 0);" }],
+      "notes": [],
+      "see_also": ["get_compiled_select", "calc_rows", "paginate"]
+    },
+    {
+      "name": "get_compiled_select",
+      "category": "execution",
+      "signature": "get_compiled_select($table = '', $reset = true)",
+      "description": "Flushes pending query state (same as count_all_results()), strips eager-loading relations, and delegates to CI3's native get_compiled_select() to return the raw SQL string without executing it. Ignores eager-loading by design (same rationale as count_all_results()) — aggregate subqueries still show up since they live in SELECT/WHERE.",
+      "parameters": [
+        { "name": "table", "type": "string", "default": "''", "description": "Table name." },
+        { "name": "reset", "type": "bool", "default": "true", "description": "Whether to reset query state afterward." }
+      ],
+      "returns": { "type": "string", "description": "Compiled SQL string." },
+      "examples": [{ "description": "Inspect the SQL a chain would produce", "code": "$sql = $this->db->where('status', 'active')->get_compiled_select('users');" }],
+      "notes": [],
+      "see_also": ["count_all_results"]
+    },
+    {
+      "name": "query",
+      "category": "execution",
+      "signature": "query($sql, $binds = false, $return_object = null)",
+      "description": "Override so raw SQL keeps working like native CI, while SELECT results are still wrapped in a CustomQueryBuilderResult. If with_one()/with_many() relations are queued beforehand, they're still resolved as separate follow-up queries matched back onto the raw SQL's results in PHP. Does NOT support anything that needs to splice into THIS query's SELECT/WHERE/JOIN before compilation — top-level with_count()/with_sum()/etc., where_has(), where_exists_relation(), where_aggregate(), join_count()/join_sum()/etc. queued beforehand are silently discarded (and cleared, so they don't leak into the next call either).",
+      "parameters": [
+        { "name": "sql", "type": "string", "default": null, "description": "Raw SQL statement." },
+        { "name": "binds", "type": "mixed", "default": "false", "description": "CI3-native query bindings." },
+        { "name": "return_object", "type": "bool|string|null", "default": "null", "description": "CI3-native result object override." }
+      ],
+      "returns": { "type": "CustomQueryBuilderResult|bool", "description": "Wrapped result for SELECT; plain bool for write statements (INSERT/UPDATE/DELETE), same as native CI3." },
+      "examples": [
+        { "description": "Raw SELECT", "code": "$result = $this->db->query(\"SELECT * FROM transaction WHERE status = 1\");\n$result->result();" },
+        { "description": "Raw SELECT + eager loading", "code": "$this->db->with_one('marketing_spk', 'idmarketing_spk', 'idmarketing_spk');\n$q = $this->db->query(\"SELECT * FROM transaction WHERE status = 1\");\n$data = $q->result();" },
+        { "description": "Write statement", "code": "$ok = $this->db->query(\"UPDATE users SET status = 'inactive' WHERE id = 1\"); // returns bool" }
+      ],
+      "notes": [],
+      "see_also": ["get"]
+    },
+    {
+      "name": "all_last_query",
+      "category": "execution",
+      "signature": "all_last_query()",
+      "description": "Returns every query executed by the most recent get() call, as an array of SQL strings — the main query plus one per eager-loaded relation, in execution order. Falls back to a single-element array (native last_query()) for plain queries with no eager loading.",
+      "parameters": [],
+      "returns": { "type": "array", "description": "Array of SQL strings." },
+      "examples": [{ "description": "", "code": "$this->db->with_many('posts', 'user_id', 'id')->get('users');\n$queries = $this->db->all_last_query(); // [main query, relation query]" }],
+      "notes": [],
+      "see_also": []
+    },
+    {
+      "name": "reset_query",
+      "category": "execution",
+      "signature": "reset_query()",
+      "description": "Clears every custom queue this library maintains (eager-loading relations, all pending_* condition/aggregate queues, calc_rows/pagination state, group-tracking stacks, temp table name, call-order bookkeeping) in addition to CI3's own native reset. Important when cloning a builder instance to construct a subquery.",
+      "parameters": [],
+      "returns": { "type": "$this", "description": "For chaining (native CI3 return value)." },
+      "examples": [{ "description": "", "code": "$this->db->reset_query();" }],
+      "notes": ["Called automatically by get()/get_where() as part of their internal flow — you rarely need to call this yourself, except between independent query chains reusing the same $this->db instance in the same request."],
+      "see_also": []
+    },
+    {
+      "name": "pluck",
+      "category": "execution",
+      "signature": "pluck($column, $table = '')",
+      "description": "Returns a flat array of a single column's values across every matching row. Dot notation can reach into an eager-loaded relation.",
+      "parameters": [
+        { "name": "column", "type": "string", "default": null, "description": "Column to pluck (supports 'relation.column' dot notation for a loaded relation)." },
+        { "name": "table", "type": "string", "default": "''", "description": "Table name." }
+      ],
+      "returns": { "type": "array", "description": "Flat array of values." },
+      "examples": [
+        { "description": "Plain column", "code": "$emails = $this->db->from('users')->pluck('email');\n// ['a@x.com', 'b@x.com', ...]" },
+        { "description": "Through an eager-loaded relation", "code": "$names = $this->db->from('users')->with_one('profile', 'profile_id', 'id')->pluck('profile.name');" }
+      ],
+      "notes": [],
+      "see_also": []
+    },
+    {
+      "name": "with",
+      "category": "eager-loading",
+      "signature": "with($relation, $foreignKey, $localKey, $multiple = true, $callback = null)",
+      "description": "The generic engine behind with_one()/with_many() — both are one-line wrappers around this with $multiple fixed to false/true respectively. Prefer with_one()/with_many() for readability; with() is identical functionality with multiplicity spelled out as a boolean.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or a single-element ['table' => 'alias'] array." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table (array for composite keys)." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table (must match foreignKey's cardinality)." },
+        { "name": "multiple", "type": "bool", "default": "true", "description": "true = array of matching rows (with_many style), false = single row (with_one style)." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "callable(CustomQueryBuilder): void — add WHERE/order_by/nested relations scoped to this relation's subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Equivalent to with_many()", "code": "$this->db->with('comments', 'post_id', 'id', true, function ($q) {\n    $q->where('approved', 1);\n});" }],
+      "notes": ["Throws InvalidArgumentException if the relation array doesn't have exactly one element, if $multiple isn't a strict bool, or if foreignKey/localKey cardinalities don't match."],
+      "see_also": ["with_one", "with_many"]
+    },
+    {
+      "name": "with_one",
+      "category": "eager-loading",
+      "signature": "with_one($relation, $foreignKey, $localKey, $callback = null)",
+      "description": "Eager-load a single related record per row (belongsTo/hasOne-style). When multiple relation rows match the same local key, the FIRST matching row is kept by default (respects an order_by() inside the callback) — see CustomQueryBuilder::FIX_WITH_ONE_ORDER_BY.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "callable(CustomQueryBuilder): void — scope the relation subquery (where/order_by/nested with_*)." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Basic", "code": "$posts = $this->db->with_one('users', 'id', 'user_id')->get('posts');\n// $post->users" },
+        { "description": "Aliased", "code": "$posts = $this->db->with_one(['users' => 'author'], 'id', 'user_id')->get('posts');\n// $post->author" },
+        { "description": "Scoped + order-dependent pick", "code": "$this->db->with_one('scores', 'user_id', 'id', function ($q) {\n    $q->order_by('value', 'DESC'); // keeps the highest-value row\n})->where('id', 1)->get('users');" }
+      ],
+      "notes": [],
+      "see_also": ["with_many", "with"]
+    },
+    {
+      "name": "with_many",
+      "category": "eager-loading",
+      "signature": "with_many($relation, $foreignKey, $localKey, $callback = null)",
+      "description": "Eager-load an array of related records per row (hasMany-style).",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "callable(CustomQueryBuilder): void — scope the relation subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Basic", "code": "$users = $this->db->with_many('orders', 'user_id', 'id')->get('users');\n// $user->orders (array)" },
+        { "description": "Scoped + nested relation", "code": "$posts = $this->db->with_many('comments', 'id', 'post_id', function ($q) {\n    $q->with_one('users', 'id', 'user_id')->where('approved', 1);\n})->get('posts');\n// $post->comments[0]->users" },
+        { "description": "Composite keys", "code": "$this->db->with_many('category_scores', ['user_id', 'category'], ['id', 'category'])->get('users');" }
+      ],
+      "notes": ["$relation accepts a plain string or a single-element ['table' => 'alias'] array — any other array shape throws InvalidArgumentException.", "foreignKey/localKey accept either a single column string or an equal-length array for composite keys."],
+      "see_also": ["with_one", "with"]
+    },
+    {
+      "name": "with_count",
+      "category": "aggregates",
+      "signature": "with_count($relation, $foreignKey, $localKey, $alias = null, $callback = null)",
+      "description": "Adds a correlated COUNT(*) subquery column per row.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "alias", "type": "string|null", "default": "null", "description": "Result column name; defaults to \"{relation}_count\"." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra WHERE conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Default alias", "code": "$this->db->with_count('orders', 'id', 'user_id')->order_by('orders_count', 'DESC')->get('users');\n// $user->orders_count" },
+        { "description": "Custom alias", "code": "$this->db->with_count(['orders' => 'total_orders'], 'id', 'user_id');\n// $user->total_orders" }
+      ],
+      "notes": ["Runs one extra correlated subquery per row in the result set — see JOIN-Based Aggregates (join_count) for a lighter alternative on large result sets."],
+      "see_also": ["join_count", "where_aggregate"]
+    },
+    {
+      "name": "with_sum",
+      "category": "aggregates",
+      "signature": "with_sum($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)",
+      "description": "Adds a correlated SUM(column) subquery column per row. $column can be a plain column name, or (with $is_custom_expression = true) a validated custom SQL expression.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "column", "type": "string", "default": null, "description": "Column name, or a custom expression (see $is_custom_expression)." },
+        { "name": "is_custom_expression", "type": "bool", "default": "false", "description": "Pass true to allow a whitelisted mathematical expression instead of a plain column name — see Security." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra WHERE conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Plain column", "code": "$this->db->with_sum('orders', 'id', 'user_id', 'total_amount');\n// $user->orders_sum" },
+        { "description": "Custom expression", "code": "$this->db->with_sum(['job' => 'total_after_discount'], 'id', 'idinvoice',\n    '(job_total_price_before_discount - job_discount)', true);" },
+        { "description": "Scoped", "code": "$this->db->with_avg('orders', 'id', 'user_id', 'total_amount', false, function ($q) {\n    $q->where('status', 'completed');\n});" }
+      ],
+      "notes": ["See with_calculation for arbitrary aggregate expressions with a dedicated alias-first signature."],
+      "see_also": ["with_avg", "with_calculation", "join_sum"]
+    },
+    {
+      "name": "with_avg",
+      "category": "aggregates",
+      "signature": "with_avg($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)",
+      "description": "Same shape as with_sum(), using AVG(column) instead of SUM(column).",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "column", "type": "string", "default": null, "description": "Column name, or a custom expression." },
+        { "name": "is_custom_expression", "type": "bool", "default": "false", "description": "Pass true for a whitelisted custom expression." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra WHERE conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->with_avg(['orders' => 'avg_order_value'], 'id', 'user_id', 'total_amount');\n// $user->avg_order_value" }],
+      "notes": [],
+      "see_also": ["with_sum", "join_avg"]
+    },
+    {
+      "name": "with_max",
+      "category": "aggregates",
+      "signature": "with_max($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)",
+      "description": "Same shape as with_sum(), using MAX(column).",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "column", "type": "string", "default": null, "description": "Column name, or a custom expression." },
+        { "name": "is_custom_expression", "type": "bool", "default": "false", "description": "Pass true for a whitelisted custom expression." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra WHERE conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->with_max(['orders' => 'highest_order'], 'id', 'user_id', 'total_amount');" }],
+      "notes": [],
+      "see_also": ["with_min", "join_max"]
+    },
+    {
+      "name": "with_min",
+      "category": "aggregates",
+      "signature": "with_min($relation, $foreignKey, $localKey, $column, $is_custom_expression = false, $callback = null)",
+      "description": "Same shape as with_sum(), using MIN(column).",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "column", "type": "string", "default": null, "description": "Column name, or a custom expression." },
+        { "name": "is_custom_expression", "type": "bool", "default": "false", "description": "Pass true for a whitelisted custom expression." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra WHERE conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->with_min(['orders' => 'lowest_order'], 'id', 'user_id', 'total_amount');" }],
+      "notes": [],
+      "see_also": ["with_max", "join_min"]
+    },
+    {
+      "name": "with_calculation",
+      "category": "aggregates",
+      "signature": "with_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)",
+      "description": "Add an arbitrary aggregate expression (not limited to a single SUM/AVG/etc.) as a correlated subquery column. $expression goes through the same custom-expression security validation as with_sum(..., true).",
+      "parameters": [
+        { "name": "relation", "type": "array", "default": null, "description": "['table' => 'alias'] — alias is required here (used as the result column name)." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "expression", "type": "string", "default": null, "description": "Whitelisted SQL expression, e.g. \"(SUM(a) / SUM(b)) * 100\"." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra WHERE conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Ratio expression", "code": "$orders = $this->db->with_calculation(['order_items' => 'efficiency_percentage'],\n    'order_id', 'id',\n    '(SUM(finished_qty) / SUM(total_qty)) * 100'\n)->get('orders');\n// $order->efficiency_percentage" },
+        { "description": "Scoped", "code": "$products = $this->db->with_calculation(['reviews' => 'weighted_rating'],\n    'product_id', 'id',\n    'SUM(rating * helpful_votes) / SUM(helpful_votes)',\n    function ($q) { $q->where('status', 'approved'); }\n)->get('products');" }
+      ],
+      "notes": ["Allowed in expressions: + - * / %, SUM AVG COUNT MIN MAX, DATEDIFF TIMESTAMPDIFF (MySQL-only — not yet translated for other drivers), CASE WHEN...THEN...END, ROUND FLOOR CEIL ABS, and a handful of other whitelisted functions — see Security. Dangerous keywords/expressions are rejected before ever reaching the database."],
+      "see_also": ["with_sum", "where_aggregate", "join_calculation"]
+    },
+    {
+      "name": "where_aggregate",
+      "category": "aggregates",
+      "signature": "where_aggregate($condition, $value)",
+      "description": "Filter by a previously-registered with_sum()/with_avg()/with_calculation()/etc. alias. Wraps the underlying subquery in COALESCE(subquery, 0) so a row with zero related rows (NULL aggregate) still evaluates correctly instead of silently being excluded. Preserves the exact call-order position relative to other where()/or_where()/group() calls in the same chain.",
+      "parameters": [
+        { "name": "condition", "type": "string", "default": null, "description": "\"alias operator\" e.g. \"total_spent >=\", or \"alias BETWEEN\"/\"alias NOT BETWEEN\"." },
+        { "name": "value", "type": "mixed|array", "default": null, "description": "Comparison value, or a 2-element [min, max] array for BETWEEN." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Basic threshold", "code": "$this->db->with_sum(['orders' => 'total_spent'], 'id', 'user_id', 'amount')\n    ->where_aggregate('total_spent >=', 5000)\n    ->get('users');" },
+        { "description": "BETWEEN", "code": "$this->db->with_calculation(['scores' => 'score_total'], 'user_id', 'id', 'SUM(value)')\n    ->where_aggregate('score_total BETWEEN', [1, 100])\n    ->get('users');" }
+      ],
+      "notes": ["Throws InvalidArgumentException if the alias was never registered via a with_*() call, or if a BETWEEN value array doesn't have exactly 2 elements."],
+      "see_also": ["or_where_aggregate", "with_sum", "with_calculation"]
+    },
+    {
+      "name": "or_where_aggregate",
+      "category": "aggregates",
+      "signature": "or_where_aggregate($condition, $value)",
+      "description": "OR-variant of where_aggregate().",
+      "parameters": [
+        { "name": "condition", "type": "string", "default": null, "description": "\"alias operator\", e.g. \"total_amount =\"." },
+        { "name": "value", "type": "mixed|array", "default": null, "description": "Comparison value." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->with_sum(['orders' => 'total_amount'], 'id', 'user_id', 'amount')\n    ->where_aggregate('total_amount >', 10000)\n    ->or_where_aggregate('total_amount =', 0)\n    ->get('users');" }],
+      "notes": [],
+      "see_also": ["where_aggregate"]
+    },
+    {
+      "name": "join_count",
+      "category": "join-aggregates",
+      "signature": "join_count($relation, $foreignKey, $localKey, $callback = null)",
+      "description": "Lighter alternative to with_count(): scans the relation table ONCE via a GROUP BY derived table, then LEFT JOINs it in — instead of one correlated subquery per row. Prefer this over with_count() on large result sets.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the derived-table subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$users = $this->db->join_count('orders', 'user_id', 'id')->get('users');\n// $user->orders_count" }],
+      "notes": ["Throws InvalidArgumentException if $relation is empty/whitespace-only."],
+      "see_also": ["with_count", "join_sum"]
+    },
+    {
+      "name": "join_sum",
+      "category": "join-aggregates",
+      "signature": "join_sum($relation, $foreignKey, $localKey, $column, $callback = null)",
+      "description": "join_count()'s SUM(column) counterpart — same derived-table-JOIN mechanism.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "column", "type": "string", "default": null, "description": "Column to sum (required)." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$users = $this->db->join_sum('orders', 'user_id', 'id', 'total_amount')\n    ->order_by('orders_sum', 'DESC')->get('users');\n// $user->orders_sum" }],
+      "notes": ["Throws InvalidArgumentException if $column is missing or fails column-name validation."],
+      "see_also": ["with_sum", "join_count"]
+    },
+    {
+      "name": "join_avg",
+      "category": "join-aggregates",
+      "signature": "join_avg($relation, $foreignKey, $localKey, $column, $callback = null)",
+      "description": "join_count()'s AVG(column) counterpart.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "column", "type": "string", "default": null, "description": "Column to average." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->join_avg('orders', 'user_id', 'id', 'total_amount');" }],
+      "notes": [],
+      "see_also": ["with_avg", "join_count"]
+    },
+    {
+      "name": "join_min",
+      "category": "join-aggregates",
+      "signature": "join_min($relation, $foreignKey, $localKey, $column, $callback = null)",
+      "description": "join_count()'s MIN(column) counterpart.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "column", "type": "string", "default": null, "description": "Column to find the minimum of." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->join_min('orders', 'user_id', 'id', 'total_amount');" }],
+      "notes": [],
+      "see_also": ["with_min", "join_count"]
+    },
+    {
+      "name": "join_max",
+      "category": "join-aggregates",
+      "signature": "join_max($relation, $foreignKey, $localKey, $column, $callback = null)",
+      "description": "join_count()'s MAX(column) counterpart.",
+      "parameters": [
+        { "name": "relation", "type": "string|array", "default": null, "description": "Table name, or ['table' => 'alias']." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "column", "type": "string", "default": null, "description": "Column to find the maximum of." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->join_max(['orders' => 'highest_order'], 'user_id', 'id', 'total_amount');\n// $user->highest_order" }],
+      "notes": [],
+      "see_also": ["with_max", "join_count"]
+    },
+    {
+      "name": "join_calculation",
+      "category": "join-aggregates",
+      "signature": "join_calculation($relation, $foreignKey, $localKey, $expression, $callback = null)",
+      "description": "join_count()'s arbitrary-expression counterpart — same validated-expression rules as with_calculation(), but via a derived-table JOIN instead of a correlated subquery.",
+      "parameters": [
+        { "name": "relation", "type": "array", "default": null, "description": "['table' => 'alias'] — alias used as the result column name." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "expression", "type": "string", "default": null, "description": "Whitelisted SQL expression." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "Profit margin", "code": "$this->db->join_calculation(\n    ['sales' => 'profit_margin'],\n    'product_id', 'id',\n    '((SUM(selling_price * quantity) - SUM(cost_price * quantity)) / SUM(selling_price * quantity)) * 100',\n    function ($q) { $q->where('status', 'completed'); }\n);" }],
+      "notes": [],
+      "see_also": ["with_calculation"]
+    },
+    {
+      "name": "where_exists",
+      "category": "where-exists-has",
+      "signature": "where_exists($callback)",
+      "description": "Raw EXISTS(...) subquery with full manual control — you build the entire subquery yourself in the callback.",
+      "parameters": [{ "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder): void — build the correlated subquery (select/from/where)." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where_exists(function ($q) {\n    $q->select('1')->from('posts')\n      ->where('posts.user_id = users.id')\n      ->where('status', 'published');\n});" }],
+      "notes": ["Throws InvalidArgumentException if $callback isn't callable.", "For the common \"just check a related table has any/N matching rows\" case, where_exists_relation()/where_has() are simpler — this raw form is for when you need arbitrary subquery logic."],
+      "see_also": ["where_not_exists", "or_where_exists", "or_where_not_exists", "where_exists_relation"]
+    },
+    {
+      "name": "where_not_exists",
+      "category": "where-exists-has",
+      "signature": "where_not_exists($callback)",
+      "description": "NOT EXISTS(...) counterpart to where_exists().",
+      "parameters": [{ "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder): void." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where_not_exists(function ($q) { /* ... */ });" }],
+      "notes": [],
+      "see_also": ["where_exists"]
+    },
+    {
+      "name": "or_where_exists",
+      "category": "where-exists-has",
+      "signature": "or_where_exists($callback)",
+      "description": "OR-variant of where_exists().",
+      "parameters": [{ "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder): void." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->or_where_exists(function ($q) { /* ... */ });" }],
+      "notes": [],
+      "see_also": ["where_exists"]
+    },
+    {
+      "name": "or_where_not_exists",
+      "category": "where-exists-has",
+      "signature": "or_where_not_exists($callback)",
+      "description": "OR-variant of where_not_exists().",
+      "parameters": [{ "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder): void." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->or_where_not_exists(function ($q) { /* ... */ });" }],
+      "notes": [],
+      "see_also": ["where_not_exists"]
+    },
+    {
+      "name": "where_exists_relation",
+      "category": "where-exists-has",
+      "signature": "where_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)",
+      "description": "Simplified WHERE EXISTS that auto-joins on the given keys instead of writing the subquery by hand. Works equally well whether from('table') was called up front or get('table') at the end — the parent table is resolved lazily either way. Supports composite keys via arrays.",
+      "parameters": [
+        { "name": "relation", "type": "string", "default": null, "description": "Related table name, optionally \"table alias\"." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the EXISTS subquery." },
+        { "name": "disable_pending_process", "type": "bool", "default": "false", "description": "Advanced/rarely needed: skip queuing through the ordering-preserving pending mechanism. Exists for edge cases needing the same reordering used inside group() even outside one." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Basic", "code": "$this->db->from('users')->where_exists_relation('orders', 'user_id', 'id');\n// WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)" },
+        { "description": "Scoped", "code": "$this->db->from('users')->where_exists_relation('orders', 'user_id', 'id', function ($q) {\n    $q->where('status', 'active');\n});" },
+        { "description": "Composite keys", "code": "$this->db->from('users')->where_exists_relation('user_roles', ['user_id', 'tenant_id'], ['id', 'tenant_id']);" },
+        { "description": "Combined with OR", "code": "$this->db->from('users')\n    ->where_exists_relation('orders', 'user_id', 'id')\n    ->or_where_exists_relation('posts', 'user_id', 'id');" }
+      ],
+      "notes": [],
+      "see_also": ["where_not_exists_relation", "where_has"]
+    },
+    {
+      "name": "where_not_exists_relation",
+      "category": "where-exists-has",
+      "signature": "where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)",
+      "description": "NOT EXISTS counterpart to where_exists_relation(). Also aliased as where_doesnt_have().",
+      "parameters": [
+        { "name": "relation", "type": "string", "default": null, "description": "Related table name." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." },
+        { "name": "disable_pending_process", "type": "bool", "default": "false", "description": "Advanced: see where_exists_relation()." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->where_not_exists_relation('orders', 'user_id', 'id');" }],
+      "notes": [],
+      "see_also": ["where_exists_relation", "where_doesnt_have"]
+    },
+    {
+      "name": "or_where_exists_relation",
+      "category": "where-exists-has",
+      "signature": "or_where_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)",
+      "description": "OR-variant of where_exists_relation().",
+      "parameters": [
+        { "name": "relation", "type": "string", "default": null, "description": "Related table name." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." },
+        { "name": "disable_pending_process", "type": "bool", "default": "false", "description": "Advanced: see where_exists_relation()." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->or_where_exists_relation('posts', 'user_id', 'id');" }],
+      "notes": [],
+      "see_also": ["where_exists_relation"]
+    },
+    {
+      "name": "or_where_not_exists_relation",
+      "category": "where-exists-has",
+      "signature": "or_where_not_exists_relation($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)",
+      "description": "OR-variant of where_not_exists_relation().",
+      "parameters": [
+        { "name": "relation", "type": "string", "default": null, "description": "Related table name." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." },
+        { "name": "disable_pending_process", "type": "bool", "default": "false", "description": "Advanced: see where_exists_relation()." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->or_where_not_exists_relation('orders', 'user_id', 'id');" }],
+      "notes": [],
+      "see_also": ["where_not_exists_relation"]
+    },
+    {
+      "name": "where_has",
+      "category": "where-exists-has",
+      "signature": "where_has($relation, $foreignKey, $localKey, $callback = null, $operator = '>=', $count = 1)",
+      "description": "Existence check with a count threshold. With the default count (>=1), compiles to the same plain EXISTS shape as where_exists_relation() (no COUNT(*) overhead). A 4th-argument shorthand lets you pass just the operator when you don't need a callback.",
+      "parameters": [
+        { "name": "relation", "type": "string", "default": null, "description": "Related table name." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "callback", "type": "callable|string|null", "default": "null", "description": "Extra conditions inside the subquery, OR (shorthand) the operator string when you don't need a callback." },
+        { "name": "operator", "type": "string", "default": "'>='", "description": "Comparison operator for the count." },
+        { "name": "count", "type": "int", "default": "1", "description": "Threshold to compare the related row count against." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Default (>=1), same as where_exists_relation()", "code": "$this->db->from('users')->where_has('orders', 'user_id', 'id');" },
+        { "description": "Scoped", "code": "$this->db->from('users')->where_has('orders', 'user_id', 'id', function ($q) {\n    $q->where('status', 'active');\n});" },
+        { "description": "Count threshold", "code": "$this->db->from('users')->where_has('orders', 'user_id', 'id', null, '>=', 5);" },
+        { "description": "Shorthand operator (no callback)", "code": "$this->db->from('users')->where_has('orders', 'user_id', 'id', '>=', 5);" }
+      ],
+      "notes": [],
+      "see_also": ["or_where_has", "where_doesnt_have", "where_exists_relation"]
+    },
+    {
+      "name": "or_where_has",
+      "category": "where-exists-has",
+      "signature": "or_where_has($relation, $foreignKey, $localKey, $callback = null, $operator = '>=', $count = 1)",
+      "description": "OR-variant of where_has(). Same parameter shape.",
+      "parameters": [
+        { "name": "relation", "type": "string", "default": null, "description": "Related table name." },
+        { "name": "foreignKey", "type": "string", "default": null, "description": "Column on the related table." },
+        { "name": "localKey", "type": "string", "default": null, "description": "Column on the main table." },
+        { "name": "callback", "type": "callable|string|null", "default": "null", "description": "Callback or shorthand operator string." },
+        { "name": "operator", "type": "string", "default": "'>='", "description": "Comparison operator." },
+        { "name": "count", "type": "int", "default": "1", "description": "Count threshold." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('id', 999)->or_where_has('scores', 'user_id', 'id', null, '>=', 2)->get('users');" }],
+      "notes": [],
+      "see_also": ["where_has"]
+    },
+    {
+      "name": "where_doesnt_have",
+      "category": "where-exists-has",
+      "signature": "where_doesnt_have($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)",
+      "description": "Documented alias of where_not_exists_relation() — same NOT EXISTS subquery shape, more Laravel-familiar name.",
+      "parameters": [
+        { "name": "relation", "type": "string", "default": null, "description": "Related table name." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." },
+        { "name": "disable_pending_process", "type": "bool", "default": "false", "description": "Advanced: see where_exists_relation()." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->where_doesnt_have('orders', 'user_id', 'id');" }],
+      "notes": [],
+      "see_also": ["where_not_exists_relation", "or_where_doesnt_have"]
+    },
+    {
+      "name": "or_where_doesnt_have",
+      "category": "where-exists-has",
+      "signature": "or_where_doesnt_have($relation, $foreignKey, $localKey, $callback = null, $disable_pending_process = false)",
+      "description": "OR-variant / alias of or_where_not_exists_relation().",
+      "parameters": [
+        { "name": "relation", "type": "string", "default": null, "description": "Related table name." },
+        { "name": "foreignKey", "type": "string|array", "default": null, "description": "Column(s) on the related table." },
+        { "name": "localKey", "type": "string|array", "default": null, "description": "Column(s) on the main table." },
+        { "name": "callback", "type": "callable|null", "default": "null", "description": "Extra conditions inside the subquery." },
+        { "name": "disable_pending_process", "type": "bool", "default": "false", "description": "Advanced: see where_exists_relation()." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->or_where_doesnt_have('orders', 'user_id', 'id');" }],
+      "notes": [],
+      "see_also": ["where_doesnt_have"]
+    },
+    {
+      "name": "when",
+      "category": "conditional",
+      "signature": "when($condition, $callback, $default = null)",
+      "description": "Run a callback only if $condition is truthy, with an optional else-callback. Great for building dynamic filter chains without a wall of if-statements.",
+      "parameters": [
+        { "name": "condition", "type": "mixed", "default": null, "description": "Evaluated as a boolean." },
+        { "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder): void, run when $condition is truthy." },
+        { "name": "default", "type": "callable|null", "default": "null", "description": "callable(CustomQueryBuilder): void, run when $condition is falsy." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "Simple", "code": "$this->db->when($search_term, function ($q) use ($search_term) {\n    $q->like('name', $search_term);\n});" },
+        { "description": "With else", "code": "$this->db->when($user_role == 'admin', function ($q) {\n    $q->select('*');\n}, function ($q) {\n    $q->select('id, name, email');\n});" },
+        { "description": "Chained dynamic filters", "code": "$this->db->from('users')\n    ->when($search, function ($q) use ($search) { $q->search($search, ['name', 'email']); })\n    ->when($status, function ($q) use ($status) { $q->where('status', $status); })\n    ->get();" }
+      ],
+      "notes": [],
+      "see_also": ["unless"]
+    },
+    {
+      "name": "unless",
+      "category": "conditional",
+      "signature": "unless($condition, $callback, $default = null)",
+      "description": "Inverse of when() — runs the callback when $condition is falsy.",
+      "parameters": [
+        { "name": "condition", "type": "mixed", "default": null, "description": "Evaluated as a boolean." },
+        { "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder): void, run when $condition is falsy." },
+        { "name": "default", "type": "callable|null", "default": "null", "description": "callable(CustomQueryBuilder): void, run when $condition is truthy." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->unless($user_role == 'admin', function ($q) {\n    $q->where('status', 'published');\n});" }],
+      "notes": [],
+      "see_also": ["when"]
+    },
+    {
+      "name": "search",
+      "category": "search",
+      "signature": "search($term, array $columns, $or = true)",
+      "description": "Multi-column LIKE search shorthand, wrapped in its own group().",
+      "parameters": [
+        { "name": "term", "type": "string", "default": null, "description": "Search term." },
+        { "name": "columns", "type": "array", "default": null, "description": "Columns to search across." },
+        { "name": "or", "type": "bool", "default": "true", "description": "true = OR the column conditions together; false = AND them." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [
+        { "description": "OR across columns (default)", "code": "$this->db->search('john', ['name', 'email']);\n// WHERE (`name` LIKE '%john%' OR `email` LIKE '%john%')" },
+        { "description": "AND across columns", "code": "$this->db->search('admin', ['role', 'title'], false);\n// WHERE (`role` LIKE '%admin%' AND `title` LIKE '%admin%')" }
+      ],
+      "notes": ["Blank/empty entries in $columns are skipped without producing invalid SQL.", "An empty $columns array leaves the query unchanged (no-op, not an error)."],
+      "see_also": ["when"]
+    },
+    {
+      "name": "paginate",
+      "category": "pagination",
+      "signature": "paginate($per_page = 15, $page = 1)",
+      "description": "Laravel-style page-based pagination, built on calc_rows(). Computes LIMIT/OFFSET from $per_page/$page for you. Argument order deliberately matches Laravel's own paginate($perPage, ...) — a single-argument ->paginate(20) means \"20 per page\", not \"page 20\". Uses a portable COUNT(*) subquery on every driver (including MySQL — SQL_CALC_FOUND_ROWS is not used anywhere in this library).",
+      "parameters": [
+        { "name": "per_page", "type": "int", "default": "15", "description": "Rows per page. Must be >= 1." },
+        { "name": "page", "type": "int", "default": "1", "description": "Page number, 1-indexed. Must be >= 1." }
+      ],
+      "returns": { "type": "$this", "description": "For chaining — call get() next." },
+      "examples": [
+        { "description": "Basic", "code": "$result = $this->db->where('status', 'active')\n    ->paginate(20, 2)   // 20 per page, page 2\n    ->get('users');\n\n$result->result();          // 20 rows for page 2\n$result->found_rows();      // total rows across every page, e.g. 347\n$result->current_page();    // 2\n$result->per_page();        // 20\n$result->last_page();       // 18\n$result->has_more_pages();  // true\n$result->from();            // 21\n$result->to();               // 40" },
+        { "description": "Single-arg shorthand (page defaults to 1)", "code": "$this->db->paginate(20)->get('users');" },
+        { "description": "With eager loading", "code": "$this->db->with_one('profile', 'user_id', 'id')->paginate(20)->get('users');" },
+        { "description": "Full JSON-shaped response in one call", "code": "$response = $this->db->where('status', 'active')->paginate(20, 2)->get('users')->to_pagination_array();" }
+      ],
+      "notes": [
+        "An explicit $limit/$offset passed to get() overrides paginate()'s computed values.",
+        "Throws InvalidArgumentException if $per_page or $page is not an integer >= 1.",
+        "There's no next_page_url/prev_page_url — this library sits below the HTTP/routing layer and has no request context to build URLs from. Build links from current_page()/last_page() in your controller."
+      ],
+      "see_also": ["calc_rows", "get_found_rows", "to_pagination_array"]
+    },
+    {
+      "name": "calc_rows",
+      "category": "pagination",
+      "signature": "calc_rows()",
+      "description": "Lower-level building block behind paginate(): marks the query so the next get() also computes the total row count the query would have matched without LIMIT, via a portable COUNT(*) subquery (used on every driver, including MySQL — never SQL_CALC_FOUND_ROWS, which is deprecated since MySQL 8.0.17 and never actually cheaper). Reach for this directly when you want the found-rows total but not page-number-based pagination (e.g. you already compute your own offset).",
+      "parameters": [],
+      "returns": { "type": "$this", "description": "For chaining — call get($table, $limit, $offset) next." },
+      "examples": [
+        { "description": "", "code": "$result = $this->db->select(['id', 'name'])->calc_rows()->get('users', 20, 0);\n$data  = $result->result();      // 20 rows\n$total = $result->found_rows();  // total rows without LIMIT" },
+        { "description": "With eager loading", "code": "$result = $this->db->select(['id', 'name'])->with_one('profile', 'user_id', 'id')->calc_rows()->get('users', 20, 0);" }
+      ],
+      "notes": ["Runs two queries under the hood — the page of data, and a SELECT COUNT(*) FROM (<your query, no LIMIT>) — same total work as calling count_all_results() and get() separately, just as one method chain."],
+      "see_also": ["paginate", "get_found_rows", "count_all_results"]
+    },
+    {
+      "name": "get_found_rows",
+      "category": "pagination",
+      "signature": "get_found_rows()",
+      "description": "Old-style (pre-$result->found_rows()) access to the calc_rows()/paginate() total: reads it straight off $this->db right after the query, instead of off the returned result object. Kept for backward compatibility.",
+      "parameters": [],
+      "returns": { "type": "int", "description": "The total from the most recent calc_rows()/paginate() query, or 0 if none was made (or if called without calc_rows()/paginate() first)." },
+      "examples": [{ "description": "", "code": "$data  = $this->db->select(['id', 'name'])->calc_rows()->get('users', 20, 0);\n$total = $this->db->get_found_rows();" }],
+      "notes": ["Prefer $result->found_rows() in new code — it's tied to the specific result object rather than to whatever $this->db was doing most recently, so it can't accidentally read a stale/wrong value if you build another query on the same builder afterward."],
+      "see_also": ["calc_rows", "paginate"]
+    },
+    {
+      "name": "group",
+      "category": "grouping",
+      "signature": "group($callback)",
+      "description": "Wraps conditions built inside the callback in a parenthesized AND-joined group. Preserves position relative to where_has()/where_exists_relation()/where_aggregate()/plain where() calls before or after it, however they're all interleaved.",
+      "parameters": [{ "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder): void." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('status', 'active')\n    ->group(function ($q) {\n        $q->where('name', 'John')->or_where('name', 'Jane');\n    });\n// WHERE `status` = 'active' AND (`name` = 'John' OR `name` = 'Jane')" }],
+      "notes": [],
+      "see_also": ["or_group", "group_start"]
+    },
+    {
+      "name": "or_group",
+      "category": "grouping",
+      "signature": "or_group($callback)",
+      "description": "OR-variant of group().",
+      "parameters": [{ "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder): void." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('status', 'active')\n    ->or_group(function ($q) { $q->where('role', 'admin'); });\n// WHERE `status` = 'active' OR (`role` = 'admin')" }],
+      "notes": [],
+      "see_also": ["group"]
+    },
+    {
+      "name": "group_start",
+      "category": "grouping",
+      "signature": "group_start()",
+      "description": "Raw opening half of a group — reach for this (paired with group_end()) instead of group()/or_group() when you need to open and close the bracket at two different points in your code (e.g. across an if), rather than inside a single callback. If nothing ends up added between group_start() and group_end(), the empty bracket is dropped automatically instead of emitting invalid \"( )\" SQL.",
+      "parameters": [],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->where('status', 'active')->group_start();\nif ($include_pending) {\n    $this->db->or_where('status', 'pending');\n}\n$this->db->where('archived', 0)->group_end();\n// WHERE `status` = 'active' AND ( `status` = 'pending' AND `archived` = 0 )" }],
+      "notes": ["Nests freely with itself, with group()/or_group(), and with where_has()/where_exists_relation()/where_aggregate() in any combination."],
+      "see_also": ["group_end", "group"]
+    },
+    {
+      "name": "group_end",
+      "category": "grouping",
+      "signature": "group_end()",
+      "description": "Closing half of the raw group_start()/group_end() pair.",
+      "parameters": [],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "See group_start() for a full example.", "code": "$this->db->group_start()->where('a', 1)->group_end();" }],
+      "notes": [],
+      "see_also": ["group_start"]
+    },
+    {
+      "name": "chunk",
+      "category": "chunking",
+      "signature": "chunk($size, $callback, $table = '')",
+      "description": "Offset-based chunking: processes a large table in pages of $size rows without loading everything into memory. The callback receives an array of objects (not arrays) plus the current page number, and can return false to stop early.",
+      "parameters": [
+        { "name": "size", "type": "int", "default": null, "description": "Rows per page." },
+        { "name": "callback", "type": "callable", "default": null, "description": "callable(object[] $rows, int $page): bool|void — return false to stop." },
+        { "name": "table", "type": "string", "default": "''", "description": "Table name (optional if from() was already called)." }
+      ],
+      "returns": { "type": "int", "description": "Total number of records processed." },
+      "examples": [{ "description": "", "code": "$this->db->where('status', 'active')->chunk(500, function ($users, $page) {\n    foreach ($users as $user) { /* ... */ }\n    if ($page > 10) return false; // stop early\n}, 'users');" }],
+      "notes": [],
+      "see_also": ["chunk_by_id"]
+    },
+    {
+      "name": "chunk_by_id",
+      "category": "chunking",
+      "signature": "chunk_by_id($size, $callback, $column = 'id', $table = '')",
+      "description": "ID-based chunking (no gaps/duplicates if rows are inserted/deleted mid-run, unlike offset-based chunk()). Throws InvalidArgumentException if $column isn't present in a fetched row (e.g. you selected specific columns and forgot to include the ordering column).",
+      "parameters": [
+        { "name": "size", "type": "int", "default": null, "description": "Rows per page." },
+        { "name": "callback", "type": "callable", "default": null, "description": "callable(object[] $rows): bool|void — return false to stop." },
+        { "name": "column", "type": "string", "default": "'id'", "description": "Ordering/cursor column (must be present in the selected columns)." },
+        { "name": "table", "type": "string", "default": "''", "description": "Table name." }
+      ],
+      "returns": { "type": "int", "description": "Total number of records processed." },
+      "examples": [{ "description": "", "code": "$this->db->chunk_by_id(1000, function ($users) {\n    foreach ($users as $user) { $this->send_email($user->email); }\n}, 'id', 'users');" }],
+      "notes": [],
+      "see_also": ["chunk"]
+    },
+    {
+      "name": "transaction",
+      "category": "transactions",
+      "signature": "transaction($callback, $strict = false)",
+      "description": "Wraps a callback in a database transaction with automatic commit/rollback. On any thrown exception inside the callback, the transaction is rolled back; by default the exception is swallowed and the method returns false — pass $strict = true to have it re-thrown instead (still after rolling back).",
+      "parameters": [
+        { "name": "callback", "type": "callable", "default": null, "description": "callable(CustomQueryBuilder $db): mixed — receives the builder instance as its argument." },
+        { "name": "strict", "type": "bool", "default": "false", "description": "If true, re-throws the original exception after rollback instead of returning false." }
+      ],
+      "returns": { "type": "mixed|bool", "description": "The callback's return value on success, or false on failure (unless $strict, which re-throws)." },
+      "examples": [
+        { "description": "Basic", "code": "$result = $this->db->transaction(function ($db) {\n    $db->insert('users', $data);\n    $id = $db->insert_id();\n    $db->insert('profiles', ['user_id' => $id]);\n    return $id;\n});" },
+        { "description": "Strict mode", "code": "$this->db->transaction(function ($db) { /* ... */ }, true);" }
+      ],
+      "notes": ["Throws InvalidArgumentException if $callback isn't callable."],
+      "see_also": []
+    },
+    {
+      "name": "process_where_has",
+      "category": "advanced",
+      "signature": "process_where_has()",
+      "description": "Manually force-resolves any queued where_has()/where_doesnt_have() conditions into the query immediately, instead of waiting for get() time. For use inside callback contexts where you need the condition applied before further chaining/inspection within that same callback.",
+      "parameters": [],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')\n    ->where('id', 1)\n    ->where_has('scores', 'user_id', 'id', null, '>=', 2)\n    ->process_where_has()\n    ->where('category', 'A')\n    ->get_compiled_select();" }],
+      "notes": ["get() calls this automatically as part of its normal flow — most code never needs to call it directly."],
+      "see_also": ["process_where_exists"]
+    },
+    {
+      "name": "process_where_exists",
+      "category": "advanced",
+      "signature": "process_where_exists($parent_table)",
+      "description": "Manually force-resolves any queued where_exists_relation() conditions into actual EXISTS/NOT EXISTS subqueries immediately. Requires the parent table name explicitly (unlike process_where_has()) so bare local keys can be qualified correctly.",
+      "parameters": [{ "name": "parent_table", "type": "string", "default": null, "description": "The main table name to qualify bare local keys against." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->where('id', 1)\n    ->where_exists_relation('scores', 'user_id', 'id')\n    ->process_where_exists('users')\n    ->where('category', 'A')\n    ->get_compiled_select();" }],
+      "notes": ["get() calls this automatically as part of its normal flow."],
+      "see_also": ["process_where_has"]
+    },
+    {
+      "name": "process_aggregates",
+      "category": "advanced",
+      "signature": "process_aggregates()",
+      "description": "Manually force-resolves queued with_count()/with_sum()/etc. SELECT-column aggregates immediately instead of at get() time.",
+      "parameters": [],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->with_count('scores', 'user_id', 'id')->process_aggregates()->where('id', 1)->get_compiled_select();" }],
+      "notes": ["get() calls this automatically."],
+      "see_also": ["process_where_aggregates", "process_join_aggregates"]
+    },
+    {
+      "name": "process_where_aggregates",
+      "category": "advanced",
+      "signature": "process_where_aggregates($context_table = null)",
+      "description": "Manually force-resolves queued where_aggregate()/or_where_aggregate() conditions immediately.",
+      "parameters": [{ "name": "context_table", "type": "string|null", "default": "null", "description": "Override which table qualifies bare local keys, instead of relying on the current FROM table." }],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->where('id', 1)\n    ->with_sum(['scores' => 'total'], 'user_id', 'id', 'value')\n    ->where_aggregate('total >', 50)\n    ->process_where_aggregates()\n    ->where('category', 'A')\n    ->get_compiled_select();" }],
+      "notes": ["get() calls this automatically."],
+      "see_also": ["process_aggregates"]
+    },
+    {
+      "name": "process_join_aggregates",
+      "category": "advanced",
+      "signature": "process_join_aggregates()",
+      "description": "Manually force-resolves queued join_count()/join_sum()/etc. derived-table JOINs immediately.",
+      "parameters": [],
+      "returns": { "type": "$this", "description": "For chaining." },
+      "examples": [{ "description": "", "code": "$this->db->from('users')->join_count('scores', 'user_id', 'id')->process_join_aggregates()->where('id', 1)->get_compiled_select();" }],
+      "notes": ["get() calls this automatically."],
+      "see_also": ["process_aggregates"]
+    },
+    {
+      "name": "result",
+      "category": "result",
+      "signature": "result()",
+      "description": "Returns every row as an array of objects (same shape as native CI). Memoized — computed once, reused on repeat calls.",
+      "parameters": [],
+      "returns": { "type": "object[]", "description": "" },
+      "examples": [{ "description": "", "code": "foreach ($result->result() as $row) { echo $row->name; }" }],
+      "notes": [],
+      "see_also": ["result_array", "row"]
+    },
+    {
+      "name": "result_array",
+      "category": "result",
+      "signature": "result_array()",
+      "description": "Returns every row as an array of associative arrays. Memoized.",
+      "parameters": [],
+      "returns": { "type": "array[]", "description": "" },
+      "examples": [{ "description": "", "code": "foreach ($result->result_array() as $row) { echo $row['name']; }" }],
+      "notes": [],
+      "see_also": ["result", "row_array"]
+    },
+    {
+      "name": "row",
+      "category": "result",
+      "signature": "row($index = 0)",
+      "description": "Returns a single row (by index, default first) as an object, or null if that index doesn't exist. Reuses result()'s cache if already computed.",
+      "parameters": [{ "name": "index", "type": "int", "default": "0", "description": "Row index." }],
+      "returns": { "type": "object|null", "description": "" },
+      "examples": [{ "description": "", "code": "$user = $result->row();\necho $user->name;" }],
+      "notes": [],
+      "see_also": ["row_array", "result"]
+    },
+    {
+      "name": "row_array",
+      "category": "result",
+      "signature": "row_array($index = 0)",
+      "description": "Array-form counterpart to row().",
+      "parameters": [{ "name": "index", "type": "int", "default": "0", "description": "Row index." }],
+      "returns": { "type": "array|null", "description": "" },
+      "examples": [{ "description": "", "code": "$user = $result->row_array();\necho $user['name'];" }],
+      "notes": [],
+      "see_also": ["row"]
+    },
+    {
+      "name": "num_rows",
+      "category": "result",
+      "signature": "num_rows()",
+      "description": "Row count for this result (computed at construction time).",
+      "parameters": [],
+      "returns": { "type": "int", "description": "" },
+      "examples": [{ "description": "", "code": "$count = $this->db->get('users')->num_rows();" }],
+      "notes": [],
+      "see_also": []
+    },
+    {
+      "name": "found_rows",
+      "category": "result",
+      "signature": "found_rows()",
+      "description": "Total row count without LIMIT, from a preceding calc_rows()/paginate() query.",
+      "parameters": [],
+      "returns": { "type": "int|null", "description": "Null if calc_rows()/paginate() wasn't used for this query." },
+      "examples": [{ "description": "", "code": "$total = $this->db->calc_rows()->get('users', 10, 0)->found_rows();" }],
+      "notes": [],
+      "see_also": ["calc_rows", "paginate", "get_found_rows"]
+    },
+    {
+      "name": "current_page",
+      "category": "result",
+      "signature": "current_page()",
+      "description": "The page number passed to paginate().",
+      "parameters": [],
+      "returns": { "type": "int|null", "description": "Null if paginate() wasn't used." },
+      "examples": [{ "description": "", "code": "$page = $result->current_page();" }],
+      "notes": [],
+      "see_also": ["paginate", "last_page"]
+    },
+    {
+      "name": "per_page",
+      "category": "result",
+      "signature": "per_page()",
+      "description": "The per-page size passed to paginate().",
+      "parameters": [],
+      "returns": { "type": "int|null", "description": "Null if paginate() wasn't used." },
+      "examples": [{ "description": "", "code": "$size = $result->per_page();" }],
+      "notes": [],
+      "see_also": ["paginate"]
+    },
+    {
+      "name": "last_page",
+      "category": "result",
+      "signature": "last_page()",
+      "description": "Total number of pages, computed as max(1, ceil(found_rows / per_page)).",
+      "parameters": [],
+      "returns": { "type": "int|null", "description": "Null if paginate() wasn't used." },
+      "examples": [{ "description": "", "code": "$totalPages = $result->last_page();" }],
+      "notes": [],
+      "see_also": ["current_page", "has_more_pages"]
+    },
+    {
+      "name": "has_more_pages",
+      "category": "result",
+      "signature": "has_more_pages()",
+      "description": "Whether there's at least one page after the current one (current_page < last_page).",
+      "parameters": [],
+      "returns": { "type": "bool", "description": "False if paginate() wasn't used." },
+      "examples": [{ "description": "", "code": "if ($result->has_more_pages()) { /* show a \"next\" link */ }" }],
+      "notes": [],
+      "see_also": ["last_page"]
+    },
+    {
+      "name": "from",
+      "category": "result",
+      "signature": "from()",
+      "description": "1-indexed position of this page's first row within the full (unpaginated) result set. E.g. page 3 at 20/page -> 41.",
+      "parameters": [],
+      "returns": { "type": "int|null", "description": "Null if paginate() wasn't used, or the page/result is empty." },
+      "examples": [{ "description": "", "code": "echo \"Showing {$result->from()}-{$result->to()} of {$result->found_rows()}\";" }],
+      "notes": [],
+      "see_also": ["to"]
+    },
+    {
+      "name": "to",
+      "category": "result",
+      "signature": "to()",
+      "description": "1-indexed position of this page's last row within the full result set, capped at found_rows() (a partial last page doesn't overshoot the true total).",
+      "parameters": [],
+      "returns": { "type": "int|null", "description": "Null if paginate() wasn't used, or the page/result is empty." },
+      "examples": [{ "description": "", "code": "echo \"Showing {$result->from()}-{$result->to()} of {$result->found_rows()}\";" }],
+      "notes": [],
+      "see_also": ["from"]
+    },
+    {
+      "name": "to_pagination_array",
+      "category": "result",
+      "signature": "to_pagination_array()",
+      "description": "Packages result_array() plus every pagination field into one Laravel-shaped array, ready for e.g. a JSON API response.",
+      "parameters": [],
+      "returns": { "type": "array", "description": "{data, current_page, per_page, total, last_page, from, to, has_more_pages}" },
+      "examples": [{ "description": "", "code": "return $this->db->paginate(20, 2)->get('users')->to_pagination_array();\n// ['data' => [...], 'current_page' => 2, 'per_page' => 20, 'total' => 347,\n//  'last_page' => 18, 'from' => 21, 'to' => 40, 'has_more_pages' => true]" }],
+      "notes": [],
+      "see_also": ["paginate"]
+    },
+    {
+      "name": "key_by",
+      "category": "result",
+      "signature": "key_by($key, $as_array = false)",
+      "description": "Re-indexes the result set by a column value (Laravel Collection::keyBy()-style). $key may be a column name or a callable(row): mixed. A plain string is always treated as a column name even if it happens to collide with a PHP builtin function name.",
+      "parameters": [
+        { "name": "key", "type": "string|callable", "default": null, "description": "Column name, or callable(object|array $row): mixed." },
+        { "name": "as_array", "type": "bool", "default": "false", "description": "Return rows as arrays instead of objects." }
+      ],
+      "returns": { "type": "array", "description": "Keyed by the resolved key value." },
+      "examples": [
+        { "description": "By column", "code": "$byId = $this->db->get('users')->key_by('id');\n// [1 => {...}, 2 => {...}, ...]" },
+        { "description": "By callback", "code": "$byUpperName = $this->db->get('users')->key_by(function ($row) {\n    return strtoupper($row->name);\n});" },
+        { "description": "As arrays", "code": "$asArrays = $this->db->get('users')->key_by('id', true);" }
+      ],
+      "notes": ["If a key repeats, the last matching row wins.", "Rows missing the key (or where its value is null) are kept under their original numeric index instead of collapsing into a shared null bucket, and trigger an E_USER_WARNING."],
+      "see_also": []
+    },
+    {
+      "name": "value",
+      "category": "result",
+      "signature": "value($column)",
+      "description": "Post-execution: pulls a single column's value off the first row of an already-fetched result. Handles dotted 'relation.column' by taking the part after the last dot.",
+      "parameters": [{ "name": "column", "type": "string", "default": null, "description": "Column (or 'relation.column') to read." }],
+      "returns": { "type": "mixed|null", "description": "Null if there are no rows." },
+      "examples": [{ "description": "", "code": "$email = $this->db->where('id', 1)->get('users')->value('email');" }],
+      "notes": ["There is also a pre-execution $this->db->value($column, $table) directly on the query builder, which is more efficient since it adds an implicit SELECT + LIMIT 1 instead of fetching a full row you already have."],
+      "see_also": []
+    }
+  ]
+}

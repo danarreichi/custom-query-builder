@@ -1,0 +1,21 @@
+{
+  "name": "custom-query-builder-docs-mcp",
+  "version": "1.0.0",
+  "description": "MCP server exposing CustomQueryBuilder's API reference as tools for AI coding assistants (documentation lookup only — does not connect to or query any database).",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "custom-query-builder-docs-mcp": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke-test.js"
+  },
+  "keywords": ["mcp", "model-context-protocol", "codeigniter", "documentation"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  }
+}
