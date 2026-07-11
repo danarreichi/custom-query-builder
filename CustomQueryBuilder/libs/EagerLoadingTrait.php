@@ -810,14 +810,17 @@ trait EagerLoadingTrait
         // "Column … in SELECT is ambiguous".  The wildcard already returns the FK,
         // so we can safely skip adding it again.
         foreach ($current_select as $select_item) {
-            $clean = trim(str_replace('`', '', $select_item));
+            // Strip either quote style (backtick for mysqli, double-quote for
+            // sqlite3/most others) — these entries were built by our own
+            // driver-aware quoting, so either could show up here.
+            $clean = trim(str_replace(['`', '"'], '', $select_item));
             if (preg_match('/^(\w+)\.\*$/', $clean))
                 return false; // FK already covered by table.* wildcard
         }
 
         $selected_fields = [];
         foreach ($current_select as $select_item) {
-            $field_pattern = '/(?:`?(\w+)`?\.)?`?(\w+)`?(?:\s+AS\s+`?\w+`?)?/i';
+            $field_pattern = '/(?:["`]?(\w+)["`]?\.)?["`]?(\w+)["`]?(?:\s+AS\s+["`]?\w+["`]?)?/i';
             if (preg_match($field_pattern, $select_item, $matches)) {
                 $selected_fields[] = $matches[2];
             }
@@ -828,13 +831,13 @@ trait EagerLoadingTrait
             // when a join_* derived sub-table also selects the same column for its GROUP BY.
             $main_table = '';
             if (!empty($query_instance->qb_from)) {
-                $raw = trim(str_replace('`', '', $query_instance->qb_from[0]));
+                $raw = trim(str_replace(['`', '"'], '', $query_instance->qb_from[0]));
                 // qb_from entry may be "table_name" or "table_name alias"
                 $parts = preg_split('/\s+/', $raw);
                 $main_table = end($parts); // last token = alias if present, otherwise table name
             }
             if ($main_table !== '') {
-                $query_instance->select('`' . $main_table . '`.`' . $actual_column . '`', false);
+                $query_instance->select($this->_qi($main_table) . '.' . $this->_qi($actual_column), false);
             } else {
                 $column_name = $query_instance->protect_identifiers($actual_column, true);
                 $query_instance->select($column_name, false);

@@ -102,9 +102,9 @@ trait QueryValidationTrait
     ];
 
     /**
-     * Extract clean table name from table string (removes alias and backticks)
+     * Extract clean table name from table string (removes alias and quoting)
      *
-     * @param string $table_string Table string that may contain alias and backticks
+     * @param string $table_string Table string that may contain alias and quoting
      * @return string Clean table name
      */
     protected function extract_table_name($table_string)
@@ -113,8 +113,9 @@ trait QueryValidationTrait
         $table_parts = explode(' ', trim($table_string));
         $table_name = trim($table_parts[0]);
 
-        // Remove backticks if present
-        $table_name = trim($table_name, '`');
+        // Remove quoting if present — accept both backtick (mysqli) and
+        // double-quote (sqlite3/most others) regardless of active driver.
+        $table_name = trim($table_name, '`"');
 
         return $table_name;
     }
@@ -139,7 +140,7 @@ trait QueryValidationTrait
         if (!is_string($relation_string) || trim($relation_string) === '')
             return false;
 
-        $cleaned = str_replace('`', '', trim($relation_string));
+        $cleaned = str_replace(['`', '"'], '', trim($relation_string));
         $tokens = preg_split('/\s+/', $cleaned);
 
         // "table AS alias" -> treat like "table alias"
@@ -169,8 +170,8 @@ trait QueryValidationTrait
      */
     protected function extract_table_or_alias($table_string)
     {
-        // Remove backticks first
-        $cleaned = str_replace('`', '', trim($table_string));
+        // Remove quoting first (either backtick or double-quote)
+        $cleaned = str_replace(['`', '"'], '', trim($table_string));
 
         // Split by space to separate table name and alias
         $parts = preg_split('/\s+/', $cleaned);
@@ -332,14 +333,16 @@ trait QueryValidationTrait
      */
     protected function has_only_allowed_function_calls($expression, $extra_allowed = [])
     {
-        // Allow an optional backtick immediately around the identifier (e.g.
-        // `SLEEP`(5)) so a quoted identifier can't dodge detection here — MySQL
-        // treats a backtick-quoted name immediately followed by `(` as a valid
-        // function call, same as an unquoted one. Without the backtick in the
-        // pattern, `SLEEP`(5) was invisible to this check entirely (no match),
-        // then the tokenizer below stripped the backticks and let "SLEEP"
-        // through as if it were a harmless bare column reference.
-        if (!preg_match_all('/`?([A-Za-z_][A-Za-z0-9_]*)`?\s*\(/', $expression, $matches))
+        // Allow an optional backtick OR double-quote immediately around the
+        // identifier (e.g. `SLEEP`(5) or "SLEEP"(5)) so a quoted identifier
+        // can't dodge detection here — MySQL treats a backtick-quoted name
+        // immediately followed by `(` as a valid function call, same as an
+        // unquoted one; sqlite3/most other drivers use double-quote instead.
+        // Without a quote char in the pattern, `SLEEP`(5)/"SLEEP"(5) was
+        // invisible to this check entirely (no match), then the tokenizer
+        // below stripped the quoting and let "SLEEP" through as if it were a
+        // harmless bare column reference.
+        if (!preg_match_all('/["`]?([A-Za-z_][A-Za-z0-9_]*)["`]?\s*\(/', $expression, $matches))
             return true;
 
         foreach ($matches[1] as $name) {
@@ -381,7 +384,7 @@ trait QueryValidationTrait
     protected function is_valid_custom_expression($expression)
     {
         $extra_patterns = ['/\bSELECT\b/i', '/\bFROM\b/i', '/\bJOIN\b/i'];
-        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`<>=]+$/', $extra_patterns))
+        if (!$this->validate_expression_base($expression, '/^[\w\s\(\)\+\-\*\/\.,`"<>=]+$/', $extra_patterns))
             return false;
         if ($this->has_boolean_keyword_outside_case($expression))
             return false;
@@ -392,7 +395,9 @@ trait QueryValidationTrait
         foreach ($tokens as $token) {
             if (is_numeric($token) || $this->is_allowed_sql_function($token))
                 continue;
-            $cleaned_token = str_replace('`', '', $token);
+            // Strip either quote style (backtick for mysqli, double-quote
+            // for sqlite3/most others) before validating as a bare column.
+            $cleaned_token = str_replace(['`', '"'], '', $token);
             if (!$this->is_valid_column_name($cleaned_token))
                 return false;
         }
@@ -616,11 +621,32 @@ trait QueryValidationTrait
     }
 
     /**
-     * Backtick-quote an already-validated identifier, preserving its
-     * bare/dotted shape (does NOT qualify a bare identifier with any prefix —
-     * that is what _qualify_key()/_quote_agg_column() are for).
+     * Quote a single already-validated identifier segment using the active
+     * driver's escape character(s) ($this->_escape_char — set by CI3's
+     * DB_driver.php per-driver: backtick for mysqli, double-quote for
+     * sqlite3/most others). Some drivers (e.g. mssql) declare _escape_char
+     * as a [open, close] pair instead of a single string; handle both the
+     * same way DB_driver.php itself does.
      *
-     * "col" -> "`col`", "tbl.col" -> "`tbl`.`col`".
+     * @param string $identifier Single (non-dotted) validated identifier
+     * @return string
+     */
+    protected function _qi($identifier)
+    {
+        $ec = $this->_escape_char;
+        if (is_array($ec)) {
+            return $ec[0] . $identifier . $ec[1];
+        }
+        return $ec . $identifier . $ec;
+    }
+
+    /**
+     * Quote an already-validated identifier, preserving its bare/dotted
+     * shape (does NOT qualify a bare identifier with any prefix — that is
+     * what _qualify_key()/_quote_agg_column() are for).
+     *
+     * "col" -> `"col"`, "tbl.col" -> `"tbl"."col"` (quote char depends on
+     * the active driver — see _qi()).
      *
      * Defense-in-depth for callers (e.g. order_by_relation()) that already
      * validate the identifier with is_valid_table_name()/is_valid_column_name()
@@ -635,17 +661,18 @@ trait QueryValidationTrait
     {
         if (strpos($identifier, '.') !== false) {
             list($part1, $part2) = explode('.', $identifier, 2);
-            return '`' . $part1 . '`.`' . $part2 . '`';
+            return $this->_qi($part1) . '.' . $this->_qi($part2);
         }
-        return '`' . $identifier . '`';
+        return $this->_qi($identifier);
     }
 
     /**
      * Quote a column reference for use inside an aggregate function.
      *
      * When $column already contains a table qualifier (e.g. "tbl.col") it is
-     * quoted as `tbl`.`col`.  Otherwise it is prefixed with $relation_ref
-     * producing `relation_ref`.`col`.
+     * quoted as "tbl"."col".  Otherwise it is prefixed with $relation_ref
+     * producing "relation_ref"."col" (quote char depends on the active
+     * driver — see _qi()).
      *
      * This handles both plain tables AND subquery aliases transparently.
      *
@@ -657,9 +684,9 @@ trait QueryValidationTrait
     {
         if (strpos($column, '.') !== false) {
             list($tbl, $col) = explode('.', $column, 2);
-            return '`' . $tbl . '`.`' . $col . '`';
+            return $this->_qi($tbl) . '.' . $this->_qi($col);
         }
-        return '`' . $relation_ref . '`.`' . $column . '`';
+        return $this->_qi($relation_ref) . '.' . $this->_qi($column);
     }
 
     /**
@@ -708,17 +735,22 @@ trait QueryValidationTrait
             $after_offset = $offset + strlen($identifier);
             $next_char = isset($expression[$after_offset]) ? $expression[$after_offset] : '';
 
+            // Recognize either quote style here (not just the active driver's
+            // own _escape_char) — a hand-written custom expression may use
+            // backticks or double-quotes regardless of which driver is
+            // actually running.
             if (
                 in_array(strtoupper($identifier), $keywords)
                 || $prev_char === '.' || $next_char === '.'
                 || $prev_char === '`' || $next_char === '`'
+                || $prev_char === '"' || $next_char === '"'
             ) {
                 // Already dotted (this identifier is either the "table" or the
-                // "col" half of "table.col") or already backtick-quoted — leave
-                // it exactly as-is instead of prefixing.
+                // "col" half of "table.col") or already quoted — leave it
+                // exactly as-is instead of prefixing.
                 $result .= $identifier;
             } else {
-                $result .= "`{$subquery_alias}`.`{$identifier}`";
+                $result .= $this->_qi($subquery_alias) . '.' . $this->_qi($identifier);
             }
 
             $cursor = $after_offset;

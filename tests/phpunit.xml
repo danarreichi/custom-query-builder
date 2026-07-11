@@ -1,12 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Two separate testsuites, never one combined run: CI3's own
+    DB_driver.php::escape_identifiers() caches its quote-char regex in a
+    function-local "static" variable, which is shared process-wide across
+    EVERY driver instance (not per-connection). Running a mysqli-backed test
+    class and a sqlite3-backed one in the same PHPUnit process lets whichever
+    connects first "win" that cache for exact-compiled-SQL assertions in every
+    test that runs after it (CompiledSqlTest.php/SqliteCompiledSqlTest.php,
+    plus the handful of exact-SQL tests in EdgeCaseTest.php/SqliteEdgeCaseTest.php).
+    See CLAUDE.md's Gotchas for the full story. defaultTestSuite="mysql" keeps
+    a bare "vendor/bin/phpunit" call matching historical behavior; run the
+    sqlite suite explicitly with the testsuite option set to "sqlite".
+-->
 <phpunit
     bootstrap="./bootstrap.php"
     colors="true"
     convertDeprecationsToExceptions="false"
+    defaultTestSuite="mysql"
     beStrictAboutTestsThatDoNotTestAnything="false">
     <testsuites>
-        <testsuite name="CustomQueryBuilder">
+        <testsuite name="mysql">
             <directory suffix="Test.php">./</directory>
+            <exclude>./SqliteCompiledSqlTest.php</exclude>
+            <exclude>./SqliteEdgeCaseTest.php</exclude>
+            <exclude>./SqliteExecutionTest.php</exclude>
+        </testsuite>
+        <testsuite name="sqlite">
+            <file>./SqliteCompiledSqlTest.php</file>
+            <file>./SqliteEdgeCaseTest.php</file>
+            <file>./SqliteExecutionTest.php</file>
         </testsuite>
     </testsuites>
 </phpunit>

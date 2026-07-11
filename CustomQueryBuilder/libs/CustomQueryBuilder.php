@@ -850,11 +850,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // BUG FIX: strict `!== 0` treats ANY non-int error code as an error —
         // but CI3's own PDO driver reports "no error" as the STRING '00000'
         // (not int 0), so every query against a pdo:* connection (mysql, pgsql,
-        // sqlite, ...) used to be flagged as failed even on success. Loose `!=`
-        // correctly treats '00000' as equal to 0 (PHP8 numeric-string
-        // comparison) while still catching real non-numeric codes like
-        // 'HY000/1' or an actual integer error code such as 1064.
-        if ($error['code'] != 0)
+        // sqlite, ...) used to be flagged as failed even on success. Also
+        // covers the sqlite3 driver's own stale-101 quirk — see
+        // _is_real_database_error() docblock.
+        if ($this->_is_real_database_error($error))
             $this->handle_database_error($error);
 
         $this->db_debug = $original_debug;
@@ -897,29 +896,38 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $count_query->pending_aggregates = []; // Remove aggregates for count query
             $compiled_count_query = $count_query->get_compiled_select('', false);
 
-            // Add LIMIT for the count query if specified
-            if ($limit !== null) {
-                $compiled_count_query .= ' LIMIT ' . (int) $limit;
-                if ($offset !== null && $offset > 0)
-                    $compiled_count_query .= ' OFFSET ' . (int) $offset;
+            if ($this->dbdriver === 'mysqli') {
+                // Add LIMIT for the count query if specified
+                if ($limit !== null) {
+                    $compiled_count_query .= ' LIMIT ' . (int) $limit;
+                    if ($offset !== null && $offset > 0)
+                        $compiled_count_query .= ' OFFSET ' . (int) $offset;
+                }
+
+                // Execute count query with SQL_CALC_FOUND_ROWS
+                $count_query_with_calc_rows = preg_replace('/^SELECT\s+/i', 'SELECT SQL_CALC_FOUND_ROWS ', $compiled_count_query);
+                $this->query($count_query_with_calc_rows); // This sets FOUND_ROWS() for later use
+
+                // Store the count query before executing FOUND_ROWS()
+                $main_count_query = $this->last_query();
+
+                // Get the found_rows count
+                $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
+                $found_rows = 0;
+                if ($found_rows_query && $found_rows_query->num_rows() > 0)
+                    $found_rows = (int) $found_rows_query->row()->total;
+                $this->_last_found_rows = $found_rows;
+
+                // Restore the count query as last_query for debugging purposes
+                $this->queries[] = $main_count_query;
+            } else {
+                // Portable fallback: SQL_CALC_FOUND_ROWS/FOUND_ROWS() are
+                // MySQL-only. Wrap the unlimited compiled query in a
+                // COUNT(*) subquery instead — works on every CI3 driver.
+                $found_rows = $this->_portable_found_rows($compiled_count_query);
+                $this->_last_found_rows = $found_rows;
+                $this->queries[] = $compiled_count_query;
             }
-
-            // Execute count query with SQL_CALC_FOUND_ROWS
-            $count_query_with_calc_rows = preg_replace('/^SELECT\s+/i', 'SELECT SQL_CALC_FOUND_ROWS ', $compiled_count_query);
-            $this->query($count_query_with_calc_rows); // This sets FOUND_ROWS() for later use
-
-            // Store the count query before executing FOUND_ROWS()
-            $main_count_query = $this->last_query();
-
-            // Get the found_rows count
-            $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
-            $found_rows = 0;
-            if ($found_rows_query && $found_rows_query->num_rows() > 0)
-                $found_rows = (int) $found_rows_query->row()->total;
-            $this->_last_found_rows = $found_rows;
-
-            // Restore the count query as last_query for debugging purposes
-            $this->queries[] = $main_count_query;
 
             // RESTORE: Kembalikan with_relations setelah query count selesai
             $this->with_relations = $backup_with_relations;
@@ -944,34 +952,49 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $compiled_query = $this->get_compiled_select('', false); // false = don't reset
 
         // Add LIMIT if specified
+        $limited_query = $compiled_query;
         if ($limit !== null) {
-            $compiled_query .= ' LIMIT ' . (int) $limit;
+            $limited_query .= ' LIMIT ' . (int) $limit;
             if ($offset !== null && $offset > 0)
-                $compiled_query .= ' OFFSET ' . (int) $offset;
+                $limited_query .= ' OFFSET ' . (int) $offset;
         }
-
-        // Replace SELECT with SELECT SQL_CALC_FOUND_ROWS
-        $final_query = preg_replace('/^SELECT\s+/i', 'SELECT SQL_CALC_FOUND_ROWS ', $compiled_query);
 
         // Reset calc_rows flag and query state
         $this->_calc_rows_enabled = false;
         $this->reset_query();
 
-        // Execute the raw query
-        $result = $this->query($final_query);
+        if ($this->dbdriver === 'mysqli') {
+            // Replace SELECT with SELECT SQL_CALC_FOUND_ROWS
+            $final_query = preg_replace('/^SELECT\s+/i', 'SELECT SQL_CALC_FOUND_ROWS ', $limited_query);
 
-        // Store the main query before executing FOUND_ROWS()
-        $main_query = $this->last_query();
+            // Execute the raw query
+            $result = $this->query($final_query);
 
-        // Get the found_rows count
-        $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
-        $found_rows = 0;
-        if ($found_rows_query && $found_rows_query->num_rows() > 0)
-            $found_rows = (int) $found_rows_query->row()->total;
-        $this->_last_found_rows = $found_rows;
+            // Store the main query before executing FOUND_ROWS()
+            $main_query = $this->last_query();
 
-        // Restore the main query as last_query for debugging purposes
-        $this->queries[] = $main_query;
+            // Get the found_rows count
+            $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
+            $found_rows = 0;
+            if ($found_rows_query && $found_rows_query->num_rows() > 0)
+                $found_rows = (int) $found_rows_query->row()->total;
+            $this->_last_found_rows = $found_rows;
+
+            // Restore the main query as last_query for debugging purposes
+            $this->queries[] = $main_query;
+        } else {
+            // Portable fallback: SQL_CALC_FOUND_ROWS/FOUND_ROWS() are
+            // MySQL-only. Run the limited query for the actual result set,
+            // then compute the true (unlimited) total via a COUNT(*)
+            // subquery over $compiled_query — works on every CI3 driver.
+            $result = $this->query($limited_query);
+            $main_query = $this->last_query();
+
+            $found_rows = $this->_portable_found_rows($compiled_query);
+            $this->_last_found_rows = $found_rows;
+
+            $this->queries[] = $main_query;
+        }
 
         // Return CustomQueryBuilderResult with found_rows
         return new CustomQueryBuilderResult($result->result_array(), $found_rows);
@@ -1018,11 +1041,10 @@ class CustomQueryBuilder extends CI_DB_query_builder
         // BUG FIX: strict `!== 0` treats ANY non-int error code as an error —
         // but CI3's own PDO driver reports "no error" as the STRING '00000'
         // (not int 0), so every query against a pdo:* connection (mysql, pgsql,
-        // sqlite, ...) used to be flagged as failed even on success. Loose `!=`
-        // correctly treats '00000' as equal to 0 (PHP8 numeric-string
-        // comparison) while still catching real non-numeric codes like
-        // 'HY000/1' or an actual integer error code such as 1064.
-        if ($error['code'] != 0)
+        // sqlite, ...) used to be flagged as failed even on success. Also
+        // covers the sqlite3 driver's own stale-101 quirk — see
+        // _is_real_database_error() docblock.
+        if ($this->_is_real_database_error($error))
             $this->handle_database_error($error);
 
         $this->db_debug = $original_debug;
@@ -1097,8 +1119,46 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
+     * Portable replacement for MySQL's SQL_CALC_FOUND_ROWS/FOUND_ROWS(), used
+     * by get_with_calc_rows() on every driver except mysqli: wraps the given
+     * (unlimited) compiled SELECT in a COUNT(*) subquery and executes it.
+     *
+     * @param string $compiled_query_no_limit Compiled SELECT, without LIMIT/OFFSET
+     * @return int
+     */
+    protected function _portable_found_rows($compiled_query_no_limit)
+    {
+        $count_result = $this->query('SELECT COUNT(*) AS total FROM (' . $compiled_query_no_limit . ') AS _cqb_count_wrap');
+        if ($count_result && $count_result->num_rows() > 0)
+            return (int) $count_result->row()->total;
+        return 0;
+    }
+
+    /**
+     * True if $error (from $this->error()) represents a genuine failure.
+     *
+     * Not a bare `code != 0`: PDO reports "no error" as the string '00000'
+     * (loose `!=` already treats that as zero), and CI3's sqlite3 driver's
+     * error() unconditionally calls SQLite3::lastErrorCode()/lastErrorMsg()
+     * even after a fully successful query — by the time we call it, the
+     * connection has already stepped through the result set, leaving a
+     * stale 101 (SQLITE_DONE, "no more rows available") in place. That's
+     * never a real failure code for sqlite3, so it's excluded here the same
+     * way the PDO '00000' quirk is handled at the call sites below.
+     *
+     * @param array $error Error information array with 'code' and 'message'
+     * @return bool
+     */
+    protected function _is_real_database_error($error)
+    {
+        if ($error['code'] == 0) return false;
+        if ($this->dbdriver === 'sqlite3' && (int) $error['code'] === 101) return false;
+        return true;
+    }
+
+    /**
      * Handle database errors and display formatted error messages
-     * 
+     *
      * @param array $error Error information array with 'code' and 'message'
      * @return void
      */

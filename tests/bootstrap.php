@@ -103,3 +103,68 @@ function cqb_seed_fixtures($db)
     $db->query("DELETE FROM profiles");
     $db->query("INSERT INTO profiles (user_id, rank_score) VALUES (1, 10), (2, 30), (3, 20)");
 }
+
+/**
+ * Return a live CustomQueryBuilder instance connected to an in-memory SQLite
+ * database via CI3's native sqlite3 driver — the first non-MySQL portability
+ * target (see CLAUDE.md's driver-agnostic TODO). Self-contained: no local
+ * server, no config file, no password — a fresh ":memory:" database is
+ * created and seeded on first use, same as cqb_connection()'s MySQL fixtures.
+ *
+ * @return CustomQueryBuilder
+ */
+function cqb_sqlite_connection()
+{
+    static $connection = null;
+    if ($connection === null) {
+        $connection = DB([
+            'dsn' => '',
+            'hostname' => '',
+            'username' => '',
+            'password' => '',
+            'database' => ':memory:',
+            'dbdriver' => 'sqlite3',
+            'dbprefix' => '',
+            'pconnect' => false,
+            'db_debug' => true,
+            'cache_on' => false,
+            'cachedir' => '',
+            'char_set' => 'utf8',
+            'dbcollat' => 'utf8_general_ci',
+            'swap_pre' => '',
+            'encrypt' => false,
+            'compress' => false,
+            'stricton' => false,
+            'failover' => [],
+            'save_queries' => true,
+        ], true);
+        cqb_sqlite_seed_fixtures($connection);
+    }
+    return $connection;
+}
+
+/**
+ * Same four fixture tables as cqb_seed_fixtures(), with SQLite-flavored DDL
+ * ("INTEGER PRIMARY KEY AUTOINCREMENT" instead of MySQL's "INT ...
+ * AUTO_INCREMENT" — SQLite only treats a column as a ROWID alias when its
+ * declared type is exactly INTEGER). Always seeded fresh since the
+ * connection itself is a brand-new in-memory database, unlike the shared
+ * MySQL fixtures which persist across runs.
+ */
+function cqb_sqlite_seed_fixtures($db)
+{
+    $db->query("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT, category TEXT)");
+    $db->query("INSERT INTO users (name, email, category) VALUES
+        ('Alice', 'alice@example.com', 'A'),
+        ('Bob', 'bob@example.com', 'B'),
+        ('Charlie', 'charlie@example.com', 'A')");
+
+    $db->query("CREATE TABLE scores (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, value INTEGER)");
+    $db->query("INSERT INTO scores (user_id, value) VALUES (1, 10), (1, 50), (1, 30)");
+
+    $db->query("CREATE TABLE category_scores (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, category TEXT, value INTEGER)");
+    $db->query("INSERT INTO category_scores (user_id, category, value) VALUES (1, 'A', 100), (1, 'A', 50), (1, 'B', 999)");
+
+    $db->query("CREATE TABLE profiles (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, rank_score INTEGER)");
+    $db->query("INSERT INTO profiles (user_id, rank_score) VALUES (1, 10), (2, 30), (3, 20)");
+}

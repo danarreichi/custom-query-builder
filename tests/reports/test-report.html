@@ -104,6 +104,7 @@
   .table-scroll{
     overflow-x:auto; border:1px solid var(--border); border-radius:10px;
     background:var(--surface); box-shadow:var(--shadow);
+    max-height: 520px;
   }
   table{ border-collapse:collapse; width:100%; font-size:.88rem; }
   thead th{
@@ -129,6 +130,21 @@
   .pill::before{ content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
   .pill.pass{ background:var(--pass-bg); color:var(--pass); }
   .pill.expected{ background:var(--expected-bg); color:var(--expected); }
+  .pill.fail{ background: color-mix(in srgb, #c0392b 16%, transparent); color:#c0392b; }
+
+  .driver-badge{
+    display:inline-flex; align-items:center; gap:.4rem; font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size:.72rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+    padding:.25rem .6rem; border-radius:6px; background:var(--surface-2); color:var(--accent);
+    border:1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  }
+
+  .callout{
+    background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--accent);
+    border-radius:8px; padding:.9rem 1.1rem; margin:0 0 1.75rem; font-size:.86rem; line-height:1.6;
+    color:var(--ink); box-shadow:var(--shadow);
+  }
+  .callout strong{ color:var(--accent-ink); }
 
   footer.page{ margin-top:3rem; padding-top:1.25rem; border-top:1px solid var(--border); color:var(--muted); font-size:.82rem; }
   footer.page a{ color:var(--accent); }
@@ -139,39 +155,42 @@
     .section-head{ flex-direction:column; align-items:stretch; }
   }
 </style>
-
 <div class="wrap">
   <header class="page">
     <p class="eyebrow">CustomQueryBuilder — Test Run</p>
-    <h1>Full regression pass: PHPUnit + test-ci3 smoke suite</h1>
-    <p class="lede">Every automated test plus every manual smoke-test scenario, run back to back against the current build (trait-split refactor + this session's four WHERE-glue bug fixes).</p>
+    <h1>Full driver parity: MySQL (mysqli) vs SQLite (sqlite3)</h1>
+    <p class="lede">CompiledSqlTest, EdgeCaseTest, and ExecutionTest each now have a SQLite twin sharing the same scenarios via PHP traits (ExecutionScenariosTrait, EdgeCaseScenariosTrait) or a mechanically-generated double-quote variant (SqliteCompiledSqlTest). 118 tests run on each driver — full parity, not a partial smoke suite.</p>
   </header>
+
+  <div class="callout">
+    <strong>Why two separate PHPUnit runs, not one combined command:</strong> CodeIgniter 3's own <code class="mono">DB_driver.php::escape_identifiers()</code> caches its quote-char regex in a function-local <code class="mono">static</code> variable — shared process-wide across every driver instance, not per-connection. Running a mysqli-backed test class and a sqlite3-backed one back to back in the <em>same</em> PHP process lets whichever connects first "win" that cache, silently corrupting the other driver's exact-compiled-SQL assertions. <code class="mono">tests/phpunit.xml</code> now defines two named testsuites (<code class="mono">mysql</code>, <code class="mono">sqlite</code>) specifically so they're never invoked together — this is a CI3 framework quirk, not a bug in this library.
+  </div>
 
   <div class="stats">
     <div class="stat accent">
-      <div class="num" id="stat-phpunit-pass">—<small>/ —</small></div>
-      <div class="label">PHPUnit tests passing</div>
+      <div class="num" id="stat-mysql-pass">—<small>/ —</small></div>
+      <div class="label">MySQL (mysqli) tests passing</div>
+    </div>
+    <div class="stat accent">
+      <div class="num" id="stat-sqlite-pass">—<small>/ —</small></div>
+      <div class="label">SQLite (sqlite3, in-memory) tests passing</div>
     </div>
     <div class="stat">
-      <div class="num" id="stat-ci3-total">—</div>
-      <div class="label">test-ci3 scenarios run, zero fatal errors</div>
-    </div>
-    <div class="stat">
-      <div class="num">4</div>
-      <div class="label">WHERE-glue bugs found &amp; fixed this session</div>
+      <div class="num" id="stat-combined-pass">—<small>/ —</small></div>
+      <div class="label">Combined total, full parity, zero regressions</div>
     </div>
   </div>
 
   <section class="report">
     <div class="section-head">
       <div>
-        <h2>PHPUnit suite</h2>
-        <p>Assertion-based regression tests, grouped by test class.</p>
+        <h2><span class="driver-badge">mysqli</span> MySQL suite</h2>
+        <p>vendor/bin/phpunit --testsuite mysql — CompiledSqlTest + EdgeCaseTest + ExecutionTest, against a live MySQL connection (password swapped in for the run per CLAUDE.md's ritual, reverted to blank afterward).</p>
       </div>
-      <input class="search" id="search-phpunit" type="search" placeholder="Filter tests…" aria-label="Filter PHPUnit tests">
+      <input class="search" id="search-mysql" type="search" placeholder="Filter tests…" aria-label="Filter MySQL tests">
     </div>
     <div class="table-scroll">
-      <table id="table-phpunit">
+      <table id="table-mysql">
         <thead><tr><th style="width:3rem">#</th><th>Test</th><th style="width:6.5rem">Result</th></tr></thead>
         <tbody></tbody>
       </table>
@@ -181,1379 +200,1218 @@
   <section class="report">
     <div class="section-head">
       <div>
-        <h2>test-ci3 manual smoke suite</h2>
-        <p>Test_custom_qb controller output, one row per numbered scenario. "Expected" = the scenario deliberately triggers and prints a validation exception.</p>
+        <h2><span class="driver-badge">sqlite3</span> SQLite suite</h2>
+        <p>vendor/bin/phpunit --testsuite sqlite — SqliteCompiledSqlTest + SqliteEdgeCaseTest + SqliteExecutionTest, against a fresh in-memory :memory: connection. No server, no config file, no password needed.</p>
       </div>
-      <input class="search" id="search-ci3" type="search" placeholder="Filter scenarios…" aria-label="Filter test-ci3 scenarios">
+      <input class="search" id="search-sqlite" type="search" placeholder="Filter tests…" aria-label="Filter SQLite tests">
     </div>
     <div class="table-scroll">
-      <table id="table-ci3">
-        <thead><tr><th style="width:3.5rem">#</th><th>Scenario</th><th style="width:6.5rem">Result</th><th>Detail</th></tr></thead>
+      <table id="table-sqlite">
+        <thead><tr><th style="width:3rem">#</th><th>Test</th><th style="width:6.5rem">Result</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
   </section>
 
   <footer class="page">
-    Generated from a live run of <code class="mono">vendor/bin/phpunit --testdox</code> and <code class="mono">test-ci3</code>'s <code class="mono">Test_custom_qb</code> controller (via PHP's built-in server). No results here are hand-written.
+    Generated from two separate live runs of <code class="mono">vendor/bin/phpunit --testdox --testsuite &lt;mysql|sqlite&gt;</code> against this session's driver-agnostic fixes: <code class="mono">_is_real_database_error()</code> (sqlite3's stale-101 <code class="mono">error()</code> quirk), <code class="mono">_qi()</code> driver-aware identifier quoting, the widened function-call-detection regex in <code class="mono">has_only_allowed_function_calls()</code>, and the portable <code class="mono">calc_rows()</code>/<code class="mono">found_rows()</code> fallback. No results here are hand-written.
   </footer>
 </div>
 
 <script>
 const DATA = {
-    "phpunit": [
-        {
-            "class": "Compiled Sql",
-            "name": "Call order is preserved across or where has and plain where",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where exists relation inside group stays inside the parentheses",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where exists does not leak parent pending state into subquery",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Custom expression with already qualified column is not double prefixed",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Order by relation qualifies against the aliased main table and is backtick quoted",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Composite key where exists relation ands every key pair inside the exists",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Already dotted foreign key is not double qualified",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Group containing when containing or where exists relation stays nested",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Order by relation rejects sql injection attempts",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where in rejects sql injection in column name",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where has default count delegates to plain exists subquery",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where aggregate between preserves call order with plain wheres",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Multiple mixed pending conditions preserve exact call order",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Two independent groups with where has sandwiched between them",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Search combined with or where has preserves call order both directions",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Join count and join sum produce derived table left joins",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Raw group start end keeps or where exists relation inside the brackets",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Raw group start end with nothing added vanishes cleanly",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Custom expression with backtick quoted bare column is not mangled",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Round function is not mis qualified in custom expression",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Custom expression rejects having keyword",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Join count rejects empty relation name",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Backtick quoted disallowed function name is still rejected",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Or where in where not in or where not in produce correct sql",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where null family and or variants produce correct sql",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where not and or where not produce correct sql",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Or where between and or where not between produce correct sql",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where doesnt have and variants delegate to not exists relation",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Where not exists or where exists or where not exists callback variants",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "With count with min with max produce correct select subqueries",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Join avg join min join max produce derived table left joins",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Add select join limit latest oldest parent overrides",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Process where has manually flushes pending where has before further chaining",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Process aggregates manually flushes pending select aggregates",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Process join aggregates manually flushes pending join aggregates",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Process where aggregates manually flushes pending where aggregates",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Process where exists manually flushes pending where exists relation",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Deferred condition registered first still glues to a later plain where",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Two consecutive deferred conditions with nothing else still glue together",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Deferred condition registered first still glues to a following group",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Vanished nested group restores outer group started flag",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Deferred condition as first content inside a group still glues correctly",
-            "status": "pass"
-        },
-        {
-            "class": "Compiled Sql",
-            "name": "Deep mix of deferred conditions nested groups and when all glue correctly",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Transaction commits and passes db instance to callback",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Transaction rolls back and returns false on thrown exception",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Transaction strict mode rethrows wrapped exception and still rolls back",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Transaction rejects non callable",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Chunk processes all rows when total is an exact multiple of page size",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Chunk callback returning false on first page stops immediately",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Chunk by id accumulates across pages in id order",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Chunk by id throws when ordering column is missing from result row",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Calc rows found rows ignores limit and survives eager loading",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where between rejects arrays that are not exactly two elements",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where not between excludes rows inside the range",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Order by sequence rejects empty array",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Order by sequence rejects invalid column format",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Order by sequence sorts values absent from the list last",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "With rejects relation alias that fails table name validation",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "With rejects non boolean multiple flag",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Key by last matching row wins on duplicate keys",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Key by on empty result returns empty array",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Key by closure returning non scalar key throws",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Result call to undefined method throws bad method call exception",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Result value on wrapper returns null for missing property",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where exists rejects non callable callback",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where exists callback exception does not corrupt outer builder state",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Sibling where exists calls do not leak state between each other",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Search with empty columns array leaves query unchanged",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Search skips blank entries in columns without producing invalid sql",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Unless runs default callback when condition is true",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where has shorthand operator without explicit count defaults to one",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Query with non select statement still returns plain bool when relations pending",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where aggregate rejects an alias that was never registered",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where aggregate between rejects a one element array",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where aggregate between rejects a three element array",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Where aggregate coalesces null to zero for non between operators",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Join sum requires a column",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Join sum rejects invalid column name",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Join calculation rejects a dangerous expression",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "With calculation rejects unbalanced parentheses",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "With calculation rejects dangerous keyword",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "With calculation rejects expression over length limit",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "With avg rejects lowercase disallowed function name",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Column name of exactly 64 chars is accepted",
-            "status": "pass"
-        },
-        {
-            "class": "Edge Case",
-            "name": "Column name of 65 chars is rejected",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Get returns custom result wrapper with correct row count",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "With one respects order by desc inside relation callback",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Value returns column from first matching row or null",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Value rejects invalid column name",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "With rejects array relation with more or fewer than one element",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Where exists relation and where not exists relation partition users correctly",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Call order fix changes actual query results not just sql text",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Composite key with many only loads same category rows",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Count all results applies where conditions",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Pluck returns flat array of column values",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Or where has validates relation operator and count",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Or where has rejects invalid operator",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Or where has rejects negative count",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Or where has works correctly with valid params",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Where exists relation accepts an aliased relation string",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Where aggregate nested inside where has callback actually filters",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Where exists relation nested inside where exists callback is not dropped",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Nested where exists relation inside with many callback is not dropped",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Temp table name does not leak after eager loading get",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Temp table name does not leak after count all results",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Key by does not collide with php builtin function names",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "With sum rejects a raw sql subquery as the relation name",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Relation alias ending in sum is not misdetected as an aggregate result",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "With one no match with alias ending in count stays null not zero",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Relation of a relation with alias ending in sum is not misdetected",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Order by relation actually orders rows by the related column",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Get where applies array conditions directly",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Exists and doesnt exist reflect whether rows match",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "First returns first row or null when no match",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Get found rows returns the backward compatible total",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "All last query returns every executed query including eager loading",
-            "status": "pass"
-        },
-        {
-            "class": "Execution",
-            "name": "Deferred condition as first content inside a group filters correctly",
-            "status": "pass"
-        }
-    ],
-    "ci3": [
-        {
-            "num": "1",
-            "title": "Verify CustomQueryBuilder is extended",
-            "status": "ok",
-            "detail": "CI_DB_mysqli_driver | OK: instanceof CustomQueryBuilder"
-        },
-        {
-            "num": "2",
-            "title": "Plain get() now returns CustomQueryBuilderResult",
-            "status": "ok",
-            "detail": "CustomQueryBuilderResult | num_rows(): 3"
-        },
-        {
-            "num": "3",
-            "title": "key_by('id') on result()",
-            "status": "ok",
-            "detail": "id=1 -> name=Alice, email=alice@example.com | id=2 -> name=Bob, email=bob@example.com | id=3 -> name=Charlie, email=charlie@example.com"
-        },
-        {
-            "num": "4",
-            "title": "key_by() directly on get() return (no ->result() needed)",
-            "status": "ok",
-            "detail": "alice@example.com -> Alice | bob@example.com -> Bob | charlie@example.com -> Charlie"
-        },
-        {
-            "num": "5",
-            "title": "key_by() with array output",
-            "status": "ok",
-            "detail": "array ( | 'id' => '1', | 'name' => 'Alice', | 'email' => 'alice@example.com', | 'category' => 'A', | )"
-        },
-        {
-            "num": "6",
-            "title": "key_by() with callback",
-            "status": "ok",
-            "detail": "ALICE,BOB,CHARLIE"
-        },
-        {
-            "num": "7",
-            "title": "get_where() also wrapped",
-            "status": "ok",
-            "detail": "CustomQueryBuilderResult | (object) array( | 'id' => '2', | 'name' => 'Bob', | 'email' => 'bob@example.com', | 'category' => 'B', | )"
-        },
-        {
-            "num": "8",
-            "title": "Proxy of native method (num_fields via __call)",
-            "status": "ok",
-            "detail": "original_result class: CI_DB_mysqli_result | num_fields() via proxy: 4"
-        },
-        {
-            "num": "9",
-            "title": "query() raw SQL wrapped",
-            "status": "ok",
-            "detail": "CustomQueryBuilderResult | 2,3"
-        },
-        {
-            "num": "10",
-            "title": "query() write statement still returns bool",
-            "status": "ok",
-            "detail": "true"
-        },
-        {
-            "num": "11",
-            "title": "with_one() + order_by DESC regression check",
-            "status": "ok",
-            "detail": "user=Alice top_score=50 (expect 50)"
-        },
-        {
-            "num": "12",
-            "title": "value()",
-            "status": "ok",
-            "detail": "'bob@example.com' | NULL | correctly rejected invalid column: value: invalid column name '1; DROP TABLE users'"
-        },
-        {
-            "num": "13",
-            "title": "value() on already-fetched CustomQueryBuilderResult",
-            "status": "ok",
-            "detail": "'bob@example.com' | NULL"
-        },
-        {
-            "num": "14a",
-            "title": "NestedQueryBuilder::with() via with_one()/with_many() proxy (goes to CustomQueryBuilder::with())",
-            "status": "ok",
-            "detail": "rejected via: Invalid relation name: users; DROP TABLE users. Only alphanumeric characters and underscores are allowed."
-        },
-        {
-            "num": "14b",
-            "title": "NestedQueryBuilder::with() called DIRECTLY (low-level API)",
-            "status": "ok",
-            "detail": "rejected via: Invalid relation name: users; DROP TABLE users. Only alphanumeric characters and underscores are allowed. | user=Alice scores_count=3 (expect 3)"
-        },
-        {
-            "num": "15",
-            "title": "RelationAggregateTrait: with_count/with_sum (subquery aggregate)",
-            "status": "ok",
-            "detail": "user=Alice scores_count=3 scores_total=90 (expect 3, 90)"
-        },
-        {
-            "num": "16",
-            "title": "RelationAggregateTrait: join_sum (derived-table JOIN aggregate)",
-            "status": "ok",
-            "detail": "user=Alice scores_sum=90 (expect 90)"
-        },
-        {
-            "num": "17",
-            "title": "Nested where_aggregate() with BETWEEN + dotted key (previously unsupported/stripped in NestedQueryBuilder)",
-            "status": "ok",
-            "detail": "operator=BETWEEN (expect BETWEEN) | value=[1,100] (expect [1,100]) | foreign_key=[\"scores.user_id\"] (expect [\"scores.user_id\"], NOT [\"user_id\"])"
-        },
-        {
-            "num": "18",
-            "title": "where_exists_relation() / or_where_exists_relation() (unified into trait, never directly tested)",
-            "status": "ok",
-            "detail": "users with scores: Alice (expect Alice only) | users without scores: Bob,Charlie (expect Bob,Charlie)"
-        },
-        {
-            "num": "19",
-            "title": "or_where_exists_relation() with disable_pending_process=true (immediate-OR branch)",
-            "status": "ok",
-            "detail": "id=2 OR has-scores: Alice,Bob (expect Alice,Bob)"
-        },
-        {
-            "num": "20",
-            "title": "where_exists_relation() inside group() (_in_group_context / pending_where_queue path)",
-            "status": "ok",
-            "detail": "grouped (id=3 OR has-scores): Alice,Charlie (expect Alice,Charlie)"
-        },
-        {
-            "num": "21",
-            "title": "join_avg / join_min / join_max (alias bug fix regression)",
-            "status": "ok",
-            "detail": "avg=30.0000 lowest=10 max=50 (expect 30, 10, 50)"
-        },
-        {
-            "num": "22",
-            "title": "with_avg / with_max / with_min (subquery aggregate variants)",
-            "status": "ok",
-            "detail": "avg=30.0000 lowest=10 max=50 (expect 30, 10, 50)"
-        },
-        {
-            "num": "23",
-            "title": "Raw where_exists()/where_not_exists()/or_where_exists()/or_where_not_exists() (never executed before)",
-            "status": "ok",
-            "detail": "where_exists: Alice (expect Alice) | where_not_exists: Bob,Charlie (expect Bob,Charlie) | or_where_exists: Alice,Bob (expect Alice,Bob) | or_where_not_exists: Alice,Bob,Charlie (expect Alice,Bob,Charlie)"
-        },
-        {
-            "num": "24",
-            "title": "join_count() / join_calculation() (RelationAggregateTrait members never executed)",
-            "status": "ok",
-            "detail": "scores_count=3 value_range=40 (expect 3, 40)"
-        },
-        {
-            "num": "25",
-            "title": "with_calculation() at top level (not nested)",
-            "status": "ok",
-            "detail": "value_range=40 (expect 40)"
-        },
-        {
-            "num": "26",
-            "title": "count_all_results() after get()/query() wrapping changes",
-            "status": "ok",
-            "detail": "count_all_results(category=A): 2 (expect 2)"
-        },
-        {
-            "num": "27",
-            "title": "pluck()",
-            "status": "ok",
-            "detail": "pluck(name): Alice,Bob,Charlie (expect Alice,Bob,Charlie)"
-        },
-        {
-            "num": "28",
-            "title": "chunk()",
-            "status": "ok",
-            "detail": "chunk() collected: Alice,Bob,Charlie (expect Alice,Bob,Charlie)"
-        },
-        {
-            "num": "29",
-            "title": "insert()/update()/delete() still work after query() wrapping changes",
-            "status": "ok",
-            "detail": "insert affected_rows: 1 (expect 1) | update affected_rows: 1 (expect 1) | delete affected_rows: 1 (expect 1)"
-        },
-        {
-            "num": "30",
-            "title": "Composite/multi-key: with_many()",
-            "status": "ok",
-            "detail": "user=Alice category_scores_count=2 (expect 2, only same-category rows)"
-        },
-        {
-            "num": "31",
-            "title": "Composite/multi-key: where_exists_relation()",
-            "status": "ok",
-            "detail": "has matching category_scores: Alice (expect Alice only)"
-        },
-        {
-            "num": "32",
-            "title": "Composite/multi-key: where_aggregate() via with_calculation",
-            "status": "ok",
-            "detail": "cat_total=150 (expect 150, only category A rows)"
-        },
-        {
-            "num": "33",
-            "title": "with() rejects array relation with count != 1",
-            "status": "ok",
-            "detail": "correctly rejected multi-element array: Parameter $relation array must contain exactly one element in the form [\"relation_name\" => \"alias\"]. | correctly rejected empty array: Parameter $relation array must contain exactl"
-        },
-        {
-            "num": "34",
-            "title": "where_has() default (>=1) delegates to where_exists_relation()",
-            "status": "ok",
-            "detail": "SQL: SELECT * | FROM `users` | WHERE EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | (expect plain EXISTS subquery, same shape as where_exists_relation)"
-        },
-        {
-            "num": "35",
-            "title": "where_has()/or_where_has() with count!=1: call-order preservation check",
-            "status": "ok",
-            "detail": "SQL: SELECT * | FROM `users` | WHERE `id` = 999 | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | AND `category` = 'A' | (compare clause order against call order: id=999, or_where_ha"
-        },
-        {
-            "num": "36",
-            "title": "Sanity: does or_where_exists_relation() have the same append-at-end ordering?",
-            "status": "ok",
-            "detail": "SQL: SELECT * | FROM `users` | WHERE `id` = 999 | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | AND `category` = 'A'"
-        },
-        {
-            "num": "37",
-            "title": "Functional proof: call-order fix changes actual query results, not just SQL text",
-            "status": "ok",
-            "detail": "result: (empty) (expect empty \u2014 old buggy behavior would have returned Alice)"
-        },
-        {
-            "num": "38a",
-            "title": "where_exists_relation() via get_compiled_select()",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`)"
-        },
-        {
-            "num": "38b",
-            "title": "where_not_exists_relation() via get_compiled_select()",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE NOT EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`)"
-        },
-        {
-            "num": "38c",
-            "title": "or_where_exists_relation(disable_pending_process=true) sandwiched between where()s",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | AND `category` = 'A' | (expect: id=1 OR EXISTS(...scores.user_id = users.id...) AND category='A'"
-        },
-        {
-            "num": "38d",
-            "title": "where_exists_relation() inside group(), sandwiched between where()s",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | AND `email` != 'x@example.com' | (expect the EXISTS clause fully"
-        },
-        {
-            "num": "38e",
-            "title": "where_has() default (count=1, delegates) sandwiched between where()s",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | AND `category` = 'A'"
-        },
-        {
-            "num": "38f",
-            "title": "where_has() with explicit count!=1 sandwiched between where()s",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | AND `category` = 'A' | (expect: id=1 AND (count subquery)>=2 AND category='A', in that ord"
-        },
-        {
-            "num": "38g",
-            "title": "or_where_has() with count!=1 sandwiched between where()s (repeat of test 35, via get_compiled_select)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 999 | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | AND `category` = 'A' | (expect: id=999 OR (count subquery)>=2 AND category='A', in that o"
-        },
-        {
-            "num": "38h",
-            "title": "where_aggregate()/or_where_aggregate() with BETWEEN sandwiched between where()s",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT SUM(value) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `score_total` | FROM `users` | WHERE `id` = 1 | OR COALESCE((SELECT SUM(value) | FROM `scores` `scores_agg` | WHERE `sco"
-        },
-        {
-            "num": "38i",
-            "title": "Composite-key where_exists_relation() via get_compiled_select()",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | OR EXISTS (SELECT 1 | FROM `category_scores` | WHERE `category_scores`.`user_id` = `users`.`id` | AND `category_scores`.`category` = `users`.`category`) | AND `name` != 'Bob' |"
-        },
-        {
-            "num": "38j",
-            "title": "Multiple mixed pending conditions interleaved with plain where()s",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | AND `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`."
-        },
-        {
-            "num": "38k",
-            "title": "Same as 38d but using from() up front (table known -> group() executes immediately)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | AND `email` != 'x@example.com' | (if this matches call order but"
-        },
-        {
-            "num": "39a",
-            "title": "group() BEFORE or_where_has(), table unknown at call time (deferred group)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` ="
-        },
-        {
-            "num": "39b",
-            "title": "or_where_has() BEFORE group(), table unknown at call time (deferred group)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` ="
-        },
-        {
-            "num": "39c",
-            "title": "group() BEFORE or_where_has(), table known up front via from() (immediate group)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` ="
-        },
-        {
-            "num": "39d",
-            "title": "or_where_has() BEFORE group(), table known up front via from() (immediate group)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` ="
-        },
-        {
-            "num": "40a",
-            "title": "with_count() + group() + or_where_has(), all in call order",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT COUNT(*) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `scores_count` | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `s"
-        },
-        {
-            "num": "40b",
-            "title": "Same conditions, reversed registration order (or_where_has -> group -> with_count)",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT COUNT(*) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `scores_count` | FROM `users` | WHERE `id` = 1 | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`."
-        },
-        {
-            "num": "40c",
-            "title": "with_sum() + where_aggregate() + group(), interleaved",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT SUM(`scores`.`value`) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `scores_sum`, (SELECT SUM(value) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `scor"
-        },
-        {
-            "num": "40d",
-            "title": "Two independent groups + where_has() sandwiched between them",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | ) | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | OR ( | `name` = 'Bob' | ) | (expect: id=1 AND (category='A') OR ("
-        },
-        {
-            "num": "40e",
-            "title": "with_count() called INSIDE a group() callback",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT COUNT(*) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `scores_count` | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | ) | AND `name` != 'Bob' | (expect SELECT colum"
-        },
-        {
-            "num": "41a",
-            "title": "when(true) callback contains or_where_exists_relation(disable_pending_process=true), sandwiched",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | AND `name` != 'Bob' | (expect: id=1 AND (category='A' OR EXISTS(...)) AND"
-        },
-        {
-            "num": "41b",
-            "title": "when(true) callback contains or_where_has(count!=1), sandwiched",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | AND `name` != 'Bob' | (expect: id=1 AND (category='A' OR (count)>=2)"
-        },
-        {
-            "num": "41c",
-            "title": "when(true) callback contains group(), sandwiched between where()s",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | AND `name` != 'Bob' | (expect: id=1 AND (category='A' OR EXISTS(."
-        },
-        {
-            "num": "41d",
-            "title": "group() callback contains when(true) with or_where_has() inside, sandwiched",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | ) | AND `name` != 'Bob' | (expect: id=1 AND (category='A' OR (co"
-        },
-        {
-            "num": "41e",
-            "title": "when(false) runs the default callback instead, pending items in default still flush correctly",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `category` = 'B' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | AND `name` != 'Bob' | (expect: id=1 AND (category='B' OR EXISTS(...)) AND"
-        },
-        {
-            "num": "41f",
-            "title": "unless(false) \u2014 same as when(true) \u2014 with or_where_exists_relation inside, sandwiched",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | AND `name` != 'Bob' | (expect: id=1 AND (category='A' OR EXISTS(...)) AND"
-        },
-        {
-            "num": "41g",
-            "title": "search() (internally uses group()) combined with or_where_has(), both orders",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `name` LIKE '%john%' ESCAPE '!' | OR `email` LIKE '%john%' ESCAPE '!' | ) | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | AND `na"
-        },
-        {
-            "num": "41h",
-            "title": "Multiple when() calls interleaved with group() and where_has()",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | AND ( | `name` = 'Bob' | OR `name` = 'Alice' | ) | AND `email` != 'x"
-        },
-        {
-            "num": "41i",
-            "title": "Same as 41a but with from('users') called up front",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | AND `name` != 'Bob' | (if this is correctly qualified as scores.user_id ="
-        },
-        {
-            "num": "42a",
-            "title": "when(true) callback contains with_count() + with_sum(), sandwiched between where()s",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT COUNT(*) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `scores_count`, (SELECT SUM(`scores`.`value`) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `scor"
-        },
-        {
-            "num": "42b",
-            "title": "when(true) callback contains with_calculation() + where_aggregate(), sandwiched",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT SUM(value) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `score_total` | FROM `users` | WHERE `id` = 1 | OR COALESCE((SELECT SUM(value) | FROM `scores` `scores_agg` | WHERE `sco"
-        },
-        {
-            "num": "42c",
-            "title": "when(true) callback contains join_count()/join_sum(), sandwiched",
-            "status": "ok",
-            "detail": "SELECT `users`.*, `_jagg_scores_count`.`scores_count`, `_jagg_scores_sum`.`scores_sum` | FROM `users` | LEFT JOIN (SELECT `scores`.`user_id`, COUNT(*) AS `scores_count` | FROM `scores` | GROUP BY `scores`.`user_id`) `_ja"
-        },
-        {
-            "num": "42d",
-            "title": "group() containing when() containing with_count()",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT COUNT(*) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `scores_count` | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | ) | AND `name` != 'Bob' | (expect SELECT colum"
-        },
-        {
-            "num": "42e",
-            "title": "Mixing with_count() inside when() and outside, both should appear with distinct aliases",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT COUNT(*) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `total_scores`, (SELECT SUM(`scores`.`value`) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `sum_"
-        },
-        {
-            "num": "43a",
-            "title": "when() containing group() containing or_where_has(), get('table')-at-end style",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | ) | AND `name` != 'Bob' | (expect: id=1 AND (category='A' OR (co"
-        },
-        {
-            "num": "43b",
-            "title": "Same as 43a but with from('users') up front",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | ) | AND `name` != 'Bob' | (expect identical shape to 43a)"
-        },
-        {
-            "num": "43c",
-            "title": "group() containing when() containing or_where_exists_relation(disable_pending_process=true), get('table')-at-end",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | AND `name` != 'Bob' | (expect: id=1 AND (category='A' OR EXISTS(."
-        },
-        {
-            "num": "43d",
-            "title": "Same as 43c but with from('users') up front",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | AND `name` != 'Bob' | (expect identical shape to 43c)"
-        },
-        {
-            "num": "43e",
-            "title": "group() containing when() containing a nested group()",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR ( | `name` = 'Bob' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | ) | AND `email` != 'x@example.com' | (exp"
-        },
-        {
-            "num": "43f",
-            "title": "Triple nesting: when() -> group() -> when() -> or_where_has()",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 3 | ) | AND `name` != 'Bob' | (expect: id=1 AND (category='A' OR (co"
-        },
-        {
-            "num": "43g",
-            "title": "or_group() combined with when(), sandwiched, mixed AND/OR",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | OR ( | `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | ) | AND `name` != 'Bob' | (expect: id=1 OR (category='A' OR (coun"
-        },
-        {
-            "num": "43h",
-            "title": "Multiple groups and whens interleaved at top level",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | ) | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | OR ( | `name` = 'Bob' | ) | AND `email` != 'x@example.com' |"
-        },
-        {
-            "num": "44a",
-            "title": "group() containing ONLY when(false) with no default \u2014 group ends up empty",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `name` != 'Bob' | (what does an empty group compile to? is it valid SQL?)"
-        },
-        {
-            "num": "44b",
-            "title": "Same as 44a, but actually executed via get() (not just compiled)",
-            "status": "ok",
-            "detail": "executed OK, result: Alice"
-        },
-        {
-            "num": "44c",
-            "title": "group() containing when(false) with no default, from('users') up front",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `name` != 'Bob' | (compare against 44a \u2014 same empty-group shape regardless of from()-vs-get(table) style?)"
-        },
-        {
-            "num": "44d",
-            "title": "Empty group() as the VERY FIRST condition (no preceding where())",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE AND `name` != 'Bob' | (expect: WHERE name != 'Bob' -- with NO leading AND, since the group was popped and this becomes the true first condition)"
-        },
-        {
-            "num": "44e",
-            "title": "or_group() that ends up empty, sandwiched between where()s",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `name` != 'Bob' | (expect: WHERE id=1 AND name != 'Bob' -- empty or_group() vanishes cleanly too)"
-        },
-        {
-            "num": "45a",
-            "title": "Raw group_start()/group_end() wrapping or_where_exists_relation() (no disable_pending_process)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | AND `name` != 'Bob' | (does EXISTS land INSIDE the manual bracket"
-        },
-        {
-            "num": "45b",
-            "title": "Raw group_start()/group_end() with nothing added inside (manual empty group)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND `name` != 'Bob' | (does this get the same empty-group protection as group(), or does it still emit invalid '( )'?)"
-        },
-        {
-            "num": "45c",
-            "title": "Raw group_start()/group_end() wrapping or_where_has(count!=1)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | OR (SELECT COUNT(*) | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) >= 2 | ) | AND `name` != 'Bob' | (does the count clause land inside the"
-        },
-        {
-            "num": "46a",
-            "title": "group_start() -> where() -> group() [callback] -> group_end(), table unknown (get('table')-at-end)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE ( | `category` = 'A' | AND ( | `name` = 'Bob' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | ) | AND `id` = 1 | (does the callback group() land INSI"
-        },
-        {
-            "num": "46b",
-            "title": "Same as 46a but with from('users') up front (table known)",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE ( | `category` = 'A' | AND ( | `name` = 'Bob' | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | ) | AND `id` = 1 | (compare against 46a \u2014 should be ide"
-        },
-        {
-            "num": "46c",
-            "title": "group() [callback] containing group_start()/where()/group_end() nested inside",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | ( | `category` = 'A' | OR `category` = 'B' | ) | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | AND `name` != 'Bob' | (expect: id=1"
-        },
-        {
-            "num": "46d",
-            "title": "Sibling usage at top level: where() -> group_start()/group_end() -> group() [callback] -> where()",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | `category` = 'A' | ) | AND ( | `name` = 'Bob' | OR `name` = 'Alice' | ) | AND `email` != 'x@example.com' | (expect: id=1 AND (category='A') AND (name='Bob' OR name='Alic"
-        },
-        {
-            "num": "46e",
-            "title": "Nested raw groups: group_start() -> group_start() -> where() -> group_end() -> group_end()",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` | WHERE `id` = 1 | AND ( | ( | `category` = 'A' | ) | OR EXISTS (SELECT 1 | FROM `scores` | WHERE `scores`.`user_id` = `users`.`id`) | ) | AND `name` != 'Bob' | (expect: id=1 AND ((category='A') O"
-        },
-        {
-            "num": "47",
-            "title": "NestedQueryBuilder::where_exists() called INSIDE a with_one()/with_many() relation callback",
-            "status": "ok",
-            "detail": "Message: Creation of dynamic property NestedQueryBuilder::$pending_where_has is deprecated | Filename: libs/NestedQueryBuilder.php | Line Number: 121 | Backtrace: | | File: E:\\queryBuilder\\custom-query-builder\\CustomQuer"
-        },
-        {
-            "num": "48",
-            "title": "_safe_in_clause() rejects malicious column names in where_in()/or_where_in()/where_not_in()/or_where_not_in()",
-            "status": "ok",
-            "detail": "where_in correctly rejected: Invalid column name: id; DROP TABLE users | or_where_in correctly rejected: Invalid column name: id; DROP TABLE users | where_not_in correctly rejected: Invalid column name: id; DROP TABLE us"
-        },
-        {
-            "num": "49",
-            "title": "SQL injection: backtick-quoted disallowed function name in a custom aggregate expression is rejected",
-            "status": "ok",
-            "detail": "correctly rejected: Invalid custom expression: `SLEEP`(0). Custom expressions can only contain column names, aggregate functions, and mathematical operators."
-        },
-        {
-            "num": "50a",
-            "title": "or_where_has() now validates relation name (previously accepted silently)",
-            "status": "ok",
-            "detail": "correctly rejected: Invalid relation name: scores; DROP TABLE users. Only alphanumeric characters and underscores are allowed."
-        },
-        {
-            "num": "50b",
-            "title": "or_where_has() now validates operator (previously silently coerced to >=)",
-            "status": "ok",
-            "detail": "correctly rejected: Invalid operator: BETWEEN. Allowed operators: =, >, =,"
-        },
-        {
-            "num": "50c",
-            "title": "or_where_has() now validates count is non-negative (previously accepted silently)",
-            "status": "ok",
-            "detail": "correctly rejected: Invalid count: -5. Count must be a non-negative number."
-        },
-        {
-            "num": "50d",
-            "title": "or_where_has() still works correctly with valid params",
-            "status": "ok",
-            "detail": "result: Alice (expect Alice -- has >=2 scores)"
-        },
-        {
-            "num": "51",
-            "title": "where_exists_relation() with an aliased relation string now works (previously always rejected)",
-            "status": "ok",
-            "detail": "result: Alice (expect Alice only)"
-        },
-        {
-            "num": "52",
-            "title": "where_aggregate() nested inside a where_has() callback is no longer silently dropped",
-            "status": "ok",
-            "detail": "result: (empty) (expect empty -- nested where_aggregate() must actually filter)"
-        },
-        {
-            "num": "53a",
-            "title": "CustomQueryBuilder::where_exists() no longer drops where_exists_relation() called on the callback param",
-            "status": "ok",
-            "detail": "result: Alice (expect Alice only)"
-        },
-        {
-            "num": "53b",
-            "title": "NestedQueryBuilder::where_exists() (inside a with_many() relation callback) no longer drops where_exists_relation() on the callback param",
-            "status": "ok",
-            "detail": "Message: Creation of dynamic property NestedQueryBuilder::$pending_where_has is deprecated | Filename: libs/NestedQueryBuilder.php | Line Number: 121 | Backtrace: | | File: E:\\queryBuilder\\custom-query-builder\\CustomQuer"
-        },
-        {
-            "num": "54a",
-            "title": "Custom sum expression with an already-qualified dotted column is no longer double-prefixed",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT SUM(scores.value) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `total` | FROM `users` | WHERE `id` = 1 | (expect scores.value qualified exactly once -- NOT double-prefixed like"
-        },
-        {
-            "num": "54b",
-            "title": "Custom avg expression with a backtick-quoted bare column is not mangled",
-            "status": "ok",
-            "detail": "SELECT *, (SELECT AVG(`value`) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `avgval` | FROM `users` | WHERE `id` = 1 | (expect a single, valid backtick-quoted reference to value -- NOT doubled b"
-        },
-        {
-            "num": "55",
-            "title": "order_by_relation() with an aliased main table no longer produces invalid SQL",
-            "status": "ok",
-            "detail": "SELECT * | FROM `users` `u` | ORDER BY (SELECT `value` FROM `scores` WHERE `user_id` = `u`.`id` LIMIT 1) DESC | (expect the subquery's WHERE to reference `u`.`id` -- the alias -- NOT the invalid \"users u.id\")"
-        },
-        {
-            "num": "56a",
-            "title": "_temp_table_name no longer leaks after eager-loading get()",
-            "status": "ok",
-            "detail": "NULL | (expect NULL)"
-        },
-        {
-            "num": "56b",
-            "title": "_temp_table_name no longer leaks after count_all_results()",
-            "status": "ok",
-            "detail": "NULL | (expect NULL)"
-        },
-        {
-            "num": "57",
-            "title": "key_by() no longer misfires on column names colliding with PHP builtin function names",
-            "status": "ok",
-            "detail": "2,1 | (expect the actual COUNT(*) values as keys, e.g. 1,2 -- NOT collapsed into one bucket via count($row))"
-        },
-        {
-            "num": "58a",
-            "title": "with_sum() with a raw SQL subquery as the relation (top-level)",
-            "status": "expected",
-            "detail": "THREW: InvalidArgumentException: Invalid relation name: (SELECT user_id, value FROM scores) scores_sub. Only alphanumeric characters and underscores are allowed."
-        },
-        {
-            "num": "58b",
-            "title": "with_sum() with a raw SQL subquery as the relation, INSIDE a with_many() relation callback (nested aggregate path just fixed)",
-            "status": "expected",
-            "detail": "THREW: InvalidArgumentException: Invalid relation name: (SELECT user_id, value FROM scores) scores_sub. Only alphanumeric characters and underscores are allowed."
-        },
-        {
-            "num": "59a",
-            "title": "Regular with_many() relation whose ALIAS happens to end in '_sum', and whose rows have a 'value' column",
-            "status": "ok",
-            "detail": "user_scores_sum type=array | array ( | 0 => | (object) array( | 'id' => '188', | 'user_id' => '1', | 'value' => '10', | ), | 1 => | (object) array( | 'id' => '189', | 'user_id' => '1', | 'value' => '50', | ), | 2 => | (o"
-        },
-        {
-            "num": "59b",
-            "title": "Regular with_one() relation with NO match, whose ALIAS happens to end in '_count'",
-            "status": "ok",
-            "detail": "full row dump: | (object) array( | 'id' => '1', | 'name' => 'Alice', | 'top_score_count' => NULL, | ) | (expect field 'top_score_count' = NULL -- NOT stripped to 'top_score' = 0)"
-        },
-        {
-            "num": "59c",
-            "title": "Regular with_one() relation (single row, not a list) whose ALIAS happens to end in '_sum', and the matched row has a 'value' column",
-            "status": "ok",
-            "detail": "full row dump: | (object) array( | 'id' => '1', | 'name' => 'Alice', | 'top_score_sum' => | (object) array( | 'id' => '189', | 'user_id' => '1', | 'value' => '50', | ), | ) | (expect 'top_score_sum' = full row OBJECT wit"
-        },
-        {
-            "num": "60",
-            "title": "with_count()/with_sum() NESTED inside a with_many() relation callback -- confirms the alias-guessing removal didn't touch this separate code path",
-            "status": "ok",
-            "detail": "score id=188 category_scores_count=3 category_scores_total=1149 (expect 3, 1149) | score id=189 category_scores_count=3 category_scores_total=1149 (expect 3, 1149) | score id=190 category_scores_count=3 category_scores_t"
-        },
-        {
-            "num": "61",
-            "title": "Top-level with_count()/with_sum() still unaffected (re-check after alias-matching fix)",
-            "status": "ok",
-            "detail": "user=Alice scores_count=3 scores_total=90 (expect 3, 90)"
-        },
-        {
-            "num": "62",
-            "title": "Genuine RELATION-OF-A-RELATION (with_one/with_many nested INSIDE another relation callback), alias coincidentally ending in '_sum'",
-            "status": "ok",
-            "detail": "score id=188 owner_sum=(object) array( | 'id' => '1', | 'name' => 'Alice', | 'email' => 'alice@example.com', | 'category' => 'A', | ) | (expect full owner_sum OBJECT with id=1,name=Alice,email,category -- NOT stripped/mi"
-        },
-        {
-            "num": "63a",
-            "title": "query() override: with_sum() ALONE (no with_one/with_many) -- does the raw query() docblock example actually work?",
-            "status": "ok",
-            "detail": "CustomQueryBuilderResult | has 'total' field: no | (per docblock, expect 'total'=90 to be present -- does it actually appear?)"
-        },
-        {
-            "num": "63b",
-            "title": "Does pending_aggregates from 63a leak into the NEXT query on the same instance?",
-            "status": "ok",
-            "detail": "pending_aggregates still queued after 63a: no (empty) | user=Bob has unexpected 'total' field: no | (this query never called with_sum() itself -- 'total' should NOT be present)"
-        },
-        {
-            "num": "63c",
-            "title": "Sanity: with_relations() combined with raw query() still genuinely works (the one case query() DOES support)",
-            "status": "ok",
-            "detail": "user=Alice scores_count=3 | score id=188 category_scores_count=3 (expect 3) | score id=189 category_scores_count=3 (expect 3) | score id=190 category_scores_count=3 (expect 3)"
-        },
-        {
-            "num": "64",
-            "title": "BUG FIX regression: where_exists_relation() with an already-dotted foreign key, OUTSIDE group() (top-level, pending_where_exists path)",
-            "status": "ok",
-            "detail": "SELECT `id`, `name` | FROM `users` | WHERE EXISTS (SELECT 1 | FROM `scores` `ms` | WHERE `ms`.`user_id` = `users`.`id`) | ORDER BY `id` ASC | (expect ms.user_id qualified exactly once -- NOT ms.ms.user_id) | result: Alic"
-        },
-        {
-            "num": "65",
-            "title": "BUG FIX regression: _prefix_bare_identifiers() no longer mis-qualifies non-aggregate whitelisted SQL functions in a custom expression",
-            "status": "ok",
-            "detail": "SELECT `id`, `name`, (SELECT SUM(ROUND(`scores`.`value`, 2)) | FROM `scores` `scores` | WHERE `scores`.`user_id` = `users`.`id`) AS `rounded_total` | FROM `users` | WHERE `id` = 1 | (expect ROUND(...) intact as a functio"
-        },
-        {
-            "num": "66",
-            "title": "BUG FIX regression: is_valid_custom_expression() now rejects HAVING like is_valid_calculation_expression() already did",
-            "status": "ok",
-            "detail": "correctly rejected: Invalid custom expression: 1 HAVING 1=1. Custom expressions can only contain column names, aggregate functions, and mathematical operators."
-        },
-        {
-            "num": "67",
-            "title": "BUG FIX regression: join_count()/join_sum() etc. reject an empty relation cleanly instead of a PHP notice",
-            "status": "ok",
-            "detail": "correctly rejected: join_count: relation cannot be empty. | correctly rejected: join_count: relation cannot be empty."
-        },
-        {
-            "num": "68",
-            "title": "order_by_relation() backtick-quoting defense-in-depth (added on top of existing validation)",
-            "status": "ok",
-            "detail": "--- 68a. Compiled SQL now shows every identifier backtick-quoted --- | SELECT `id`, `name`, `id`, `name`, `id`, `name`, `id`, `name` | FROM `users` | ORDER BY (SELECT `rank_score` FROM `profiles` WHERE `user_id` = `users"
-        }
-    ]
+    "mysql": [
+    {
+        "class": "Compiled Sql",
+        "name": "Call order is preserved across or where has and plain where",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where exists relation inside group stays inside the parentheses",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where exists does not leak parent pending state into subquery",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Custom expression with already qualified column is not double prefixed",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Order by relation qualifies against the aliased main table and is backtick quoted",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Composite key where exists relation ands every key pair inside the exists",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Already dotted foreign key is not double qualified",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Group containing when containing or where exists relation stays nested",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Order by relation rejects sql injection attempts",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where in rejects sql injection in column name",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where has default count delegates to plain exists subquery",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where aggregate between preserves call order with plain wheres",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Multiple mixed pending conditions preserve exact call order",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Two independent groups with where has sandwiched between them",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Search combined with or where has preserves call order both directions",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Join count and join sum produce derived table left joins",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Raw group start end keeps or where exists relation inside the brackets",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Raw group start end with nothing added vanishes cleanly",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Custom expression with backtick quoted bare column is not mangled",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Round function is not mis qualified in custom expression",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Custom expression rejects having keyword",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Join count rejects empty relation name",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Backtick quoted disallowed function name is still rejected",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Or where in where not in or where not in produce correct sql",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where null family and or variants produce correct sql",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where not and or where not produce correct sql",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Or where between and or where not between produce correct sql",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where doesnt have and variants delegate to not exists relation",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Where not exists or where exists or where not exists callback variants",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "With count with min with max produce correct select subqueries",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Join avg join min join max produce derived table left joins",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Add select join limit latest oldest parent overrides",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Process where has manually flushes pending where has before further chaining",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Process aggregates manually flushes pending select aggregates",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Process join aggregates manually flushes pending join aggregates",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Process where aggregates manually flushes pending where aggregates",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Process where exists manually flushes pending where exists relation",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Deferred condition registered first still glues to a later plain where",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Two consecutive deferred conditions with nothing else still glue together",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Deferred condition registered first still glues to a following group",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Vanished nested group restores outer group started flag",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Deferred condition as first content inside a group still glues correctly",
+        "status": "pass"
+    },
+    {
+        "class": "Compiled Sql",
+        "name": "Deep mix of deferred conditions nested groups and when all glue correctly",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Sibling where exists calls do not leak state between each other",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Search with empty columns array leaves query unchanged",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Search skips blank entries in columns without producing invalid sql",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Unless runs default callback when condition is true",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Column name of exactly 64 chars is accepted",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Transaction commits and passes db instance to callback",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Transaction rolls back and returns false on thrown exception",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Transaction strict mode rethrows wrapped exception and still rolls back",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Transaction rejects non callable",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Chunk processes all rows when total is an exact multiple of page size",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Chunk callback returning false on first page stops immediately",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Chunk by id accumulates across pages in id order",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Chunk by id throws when ordering column is missing from result row",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Calc rows found rows ignores limit and survives eager loading",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where between rejects arrays that are not exactly two elements",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where not between excludes rows inside the range",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Order by sequence rejects empty array",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Order by sequence rejects invalid column format",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Order by sequence sorts values absent from the list last",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "With rejects relation alias that fails table name validation",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "With rejects non boolean multiple flag",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Key by last matching row wins on duplicate keys",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Key by on empty result returns empty array",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Key by closure returning non scalar key throws",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Result call to undefined method throws bad method call exception",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Result value on wrapper returns null for missing property",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where exists rejects non callable callback",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where exists callback exception does not corrupt outer builder state",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where has shorthand operator without explicit count defaults to one",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Query with non select statement still returns plain bool when relations pending",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where aggregate rejects an alias that was never registered",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where aggregate between rejects a one element array",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where aggregate between rejects a three element array",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Where aggregate coalesces null to zero for non between operators",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Join sum requires a column",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Join sum rejects invalid column name",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Join calculation rejects a dangerous expression",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "With calculation rejects unbalanced parentheses",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "With calculation rejects dangerous keyword",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "With calculation rejects expression over length limit",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "With avg rejects lowercase disallowed function name",
+        "status": "pass"
+    },
+    {
+        "class": "Edge Case",
+        "name": "Column name of 65 chars is rejected",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Get returns custom result wrapper with correct row count",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "With one respects order by desc inside relation callback",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Value returns column from first matching row or null",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Value rejects invalid column name",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "With rejects array relation with more or fewer than one element",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Where exists relation and where not exists relation partition users correctly",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Call order fix changes actual query results not just sql text",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Composite key with many only loads same category rows",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Count all results applies where conditions",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Pluck returns flat array of column values",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Or where has validates relation operator and count",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Or where has rejects invalid operator",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Or where has rejects negative count",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Or where has works correctly with valid params",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Where exists relation accepts an aliased relation string",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Where aggregate nested inside where has callback actually filters",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Where exists relation nested inside where exists callback is not dropped",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Nested where exists relation inside with many callback is not dropped",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Temp table name does not leak after eager loading get",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Temp table name does not leak after count all results",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Key by does not collide with php builtin function names",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "With sum rejects a raw sql subquery as the relation name",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Relation alias ending in sum is not misdetected as an aggregate result",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "With one no match with alias ending in count stays null not zero",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Relation of a relation with alias ending in sum is not misdetected",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Order by relation actually orders rows by the related column",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Get where applies array conditions directly",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Exists and doesnt exist reflect whether rows match",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "First returns first row or null when no match",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Get found rows returns the backward compatible total",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "All last query returns every executed query including eager loading",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Deferred condition as first content inside a group filters correctly",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "With calculation handles expression without function wrapper",
+        "status": "pass"
+    }
+],
+    "sqlite": [
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Call order is preserved across or where has and plain where",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where exists relation inside group stays inside the parentheses",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where exists does not leak parent pending state into subquery",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Custom expression with already qualified column is not double prefixed",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Order by relation qualifies against the aliased main table and is identifier quoted",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Composite key where exists relation ands every key pair inside the exists",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Already dotted foreign key is not double qualified",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Group containing when containing or where exists relation stays nested",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Order by relation rejects sql injection attempts",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where in rejects sql injection in column name",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where has default count delegates to plain exists subquery",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where aggregate between preserves call order with plain wheres",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Multiple mixed pending conditions preserve exact call order",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Two independent groups with where has sandwiched between them",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Search combined with or where has preserves call order both directions",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Join count and join sum produce derived table left joins",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Raw group start end keeps or where exists relation inside the brackets",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Raw group start end with nothing added vanishes cleanly",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Custom expression with pre quoted bare column is not mangled",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Round function is not mis qualified in custom expression",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Custom expression rejects having keyword",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Join count rejects empty relation name",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Quoted disallowed function name is still rejected",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Or where in where not in or where not in produce correct sql",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where null family and or variants produce correct sql",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where not and or where not produce correct sql",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Or where between and or where not between produce correct sql",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where doesnt have and variants delegate to not exists relation",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Where not exists or where exists or where not exists callback variants",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "With count with min with max produce correct select subqueries",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Join avg join min join max produce derived table left joins",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Add select join limit latest oldest parent overrides",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Process where has manually flushes pending where has before further chaining",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Process aggregates manually flushes pending select aggregates",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Process join aggregates manually flushes pending join aggregates",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Process where aggregates manually flushes pending where aggregates",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Process where exists manually flushes pending where exists relation",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Deferred condition registered first still glues to a later plain where",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Two consecutive deferred conditions with nothing else still glue together",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Deferred condition registered first still glues to a following group",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Vanished nested group restores outer group started flag",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Deferred condition as first content inside a group still glues correctly",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Compiled Sql",
+        "name": "Deep mix of deferred conditions nested groups and when all glue correctly",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Sibling where exists calls do not leak state between each other",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Search with empty columns array leaves query unchanged",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Search skips blank entries in columns without producing invalid sql",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Unless runs default callback when condition is true",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Column name of exactly 64 chars is accepted",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Transaction commits and passes db instance to callback",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Transaction rolls back and returns false on thrown exception",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Transaction strict mode rethrows wrapped exception and still rolls back",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Transaction rejects non callable",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Chunk processes all rows when total is an exact multiple of page size",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Chunk callback returning false on first page stops immediately",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Chunk by id accumulates across pages in id order",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Chunk by id throws when ordering column is missing from result row",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Calc rows found rows ignores limit and survives eager loading",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where between rejects arrays that are not exactly two elements",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where not between excludes rows inside the range",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Order by sequence rejects empty array",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Order by sequence rejects invalid column format",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Order by sequence sorts values absent from the list last",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "With rejects relation alias that fails table name validation",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "With rejects non boolean multiple flag",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Key by last matching row wins on duplicate keys",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Key by on empty result returns empty array",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Key by closure returning non scalar key throws",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Result call to undefined method throws bad method call exception",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Result value on wrapper returns null for missing property",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where exists rejects non callable callback",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where exists callback exception does not corrupt outer builder state",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where has shorthand operator without explicit count defaults to one",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Query with non select statement still returns plain bool when relations pending",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where aggregate rejects an alias that was never registered",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where aggregate between rejects a one element array",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where aggregate between rejects a three element array",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Where aggregate coalesces null to zero for non between operators",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Join sum requires a column",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Join sum rejects invalid column name",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Join calculation rejects a dangerous expression",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "With calculation rejects unbalanced parentheses",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "With calculation rejects dangerous keyword",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "With calculation rejects expression over length limit",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "With avg rejects lowercase disallowed function name",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Edge Case",
+        "name": "Column name of 65 chars is rejected",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Get returns custom result wrapper with correct row count",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "With one respects order by desc inside relation callback",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Value returns column from first matching row or null",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Value rejects invalid column name",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "With rejects array relation with more or fewer than one element",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Where exists relation and where not exists relation partition users correctly",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Call order fix changes actual query results not just sql text",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Composite key with many only loads same category rows",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Count all results applies where conditions",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Pluck returns flat array of column values",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Or where has validates relation operator and count",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Or where has rejects invalid operator",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Or where has rejects negative count",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Or where has works correctly with valid params",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Where exists relation accepts an aliased relation string",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Where aggregate nested inside where has callback actually filters",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Where exists relation nested inside where exists callback is not dropped",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Nested where exists relation inside with many callback is not dropped",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Temp table name does not leak after eager loading get",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Temp table name does not leak after count all results",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Key by does not collide with php builtin function names",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "With sum rejects a raw sql subquery as the relation name",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Relation alias ending in sum is not misdetected as an aggregate result",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "With one no match with alias ending in count stays null not zero",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Relation of a relation with alias ending in sum is not misdetected",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Order by relation actually orders rows by the related column",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Get where applies array conditions directly",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Exists and doesnt exist reflect whether rows match",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "First returns first row or null when no match",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Get found rows returns the backward compatible total",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "All last query returns every executed query including eager loading",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Deferred condition as first content inside a group filters correctly",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "With calculation handles expression without function wrapper",
+        "status": "pass"
+    }
+]
 };
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-function renderPhpunit(data) {
-  const tbody = document.querySelector('#table-phpunit tbody');
+function renderSuite(data, tableId, statId) {
+  const tbody = document.querySelector(`#${tableId} tbody`);
   let lastClass = null;
   let n = 0;
   let passCount = 0;
@@ -1565,32 +1423,16 @@ function renderPhpunit(data) {
     }
     n++;
     if (t.status === 'pass') passCount++;
+    const pill = t.status === 'pass' ? '<span class="pill pass">Pass</span>' : '<span class="pill fail">Fail</span>';
     rows.push(`<tr data-search="${escapeHtml((t.class + ' ' + t.name).toLowerCase())}">
       <td class="num">${n}</td>
       <td>${escapeHtml(t.name)}</td>
-      <td><span class="pill pass">Pass</span></td>
+      <td>${pill}</td>
     </tr>`);
   });
   tbody.innerHTML = rows.join('');
-  document.getElementById('stat-phpunit-pass').innerHTML = `${passCount}<small>/ ${n}</small>`;
-}
-
-function renderCi3(data) {
-  const tbody = document.querySelector('#table-ci3 tbody');
-  const rows = data.map(s => {
-    const pill = s.status === 'expected'
-      ? '<span class="pill expected">Expected</span>'
-      : '<span class="pill pass">OK</span>';
-    const detail = s.detail ? `<code>${escapeHtml(s.detail.slice(0, 160))}${s.detail.length > 160 ? '…' : ''}</code>` : '<span style="opacity:.5">—</span>';
-    return `<tr data-search="${escapeHtml((s.num + ' ' + s.title + ' ' + s.detail).toLowerCase())}">
-      <td class="num">${escapeHtml(s.num)}</td>
-      <td>${escapeHtml(s.title)}</td>
-      <td>${pill}</td>
-      <td class="detail">${detail}</td>
-    </tr>`;
-  });
-  tbody.innerHTML = rows.join('');
-  document.getElementById('stat-ci3-total').textContent = data.length;
+  document.getElementById(statId).innerHTML = `${passCount}<small>/ ${n}</small>`;
+  return { n, passCount };
 }
 
 function wireFilter(inputId, tableId) {
@@ -1607,8 +1449,10 @@ function wireFilter(inputId, tableId) {
   });
 }
 
-renderPhpunit(DATA.phpunit);
-renderCi3(DATA.ci3);
-wireFilter('search-phpunit', 'table-phpunit');
-wireFilter('search-ci3', 'table-ci3');
+const mysqlStats = renderSuite(DATA.mysql, 'table-mysql', 'stat-mysql-pass');
+const sqliteStats = renderSuite(DATA.sqlite, 'table-sqlite', 'stat-sqlite-pass');
+document.getElementById('stat-combined-pass').innerHTML =
+  `${mysqlStats.passCount + sqliteStats.passCount}<small>/ ${mysqlStats.n + sqliteStats.n}</small>`;
+wireFilter('search-mysql', 'table-mysql');
+wireFilter('search-sqlite', 'table-sqlite');
 </script>

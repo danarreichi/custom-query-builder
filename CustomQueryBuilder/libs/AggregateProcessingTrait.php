@@ -67,12 +67,12 @@ trait AggregateProcessingTrait
             $qualified_fks = array_map(function ($fk) use ($relation_alias) {
                 if (strpos($fk, '.') !== false) {
                     list($tbl, $col) = explode('.', $fk, 2);
-                    return '`' . $tbl . '`.`' . $col . '`';
+                    return $this->_qi($tbl) . '.' . $this->_qi($col);
                 }
                 if ($relation_alias) {
-                    return '`' . $relation_alias . '`.`' . $fk . '`';
+                    return $this->_qi($relation_alias) . '.' . $this->_qi($fk);
                 }
-                return '`' . $fk . '`';
+                return $this->_qi($fk);
             }, $foreign_keys);
 
             // Build derived subquery
@@ -82,7 +82,7 @@ trait AggregateProcessingTrait
             // prefix foreign key select with qualified reference
             $fk_select = implode(', ', $qualified_fks);
 
-            $select_str = $fk_select . ', ' . $agg_func . ' AS `' . $alias . '`';
+            $select_str = $fk_select . ', ' . $agg_func . ' AS ' . $this->_qi($alias);
 
             // When relation is a raw subquery e.g. "(SELECT ...) alias", bypass CI's
             // from() escaping — it would double-backtick the already-compiled SQL.
@@ -116,21 +116,21 @@ trait AggregateProcessingTrait
                 $bare_lk = strpos($local_keys[$i], '.') !== false
                     ? substr(strrchr($local_keys[$i], '.'), 1)
                     : $local_keys[$i];
-                $on_parts[] = "`{$join_alias}`.`{$bare_fks[$i]}` = `{$main_alias}`.`{$bare_lk}`";
+                $on_parts[] = $this->_qi($join_alias) . '.' . $this->_qi($bare_fks[$i]) . ' = ' . $this->_qi($main_alias) . '.' . $this->_qi($bare_lk);
             }
             $on_condition = implode(' AND ', $on_parts);
 
             // LEFT JOIN derived table (escape=false preserves subquery syntax)
-            $this->join("({$subquery_sql}) `{$join_alias}`", $on_condition, 'left', false);
+            $this->join("({$subquery_sql}) " . $this->_qi($join_alias), $on_condition, 'left', false);
 
             // If no explicit SELECT has been set yet, default to main table.*
             // so all main-table columns are preserved alongside the aggregate.
             if (empty($this->qb_select)) {
-                $this->select("`{$main_alias}`.*", false);
+                $this->select($this->_qi($main_alias) . '.*', false);
             }
 
             // Add result column to SELECT
-            $this->add_select("`{$join_alias}`.`{$alias}`", false);
+            $this->add_select($this->_qi($join_alias) . '.' . $this->_qi($alias), false);
         }
     }
 
@@ -282,7 +282,16 @@ trait AggregateProcessingTrait
             );
 
             // Use table alias in FROM clause for subquery
-            $subquery->select($aggregate_function);
+            // escape=false: $aggregate_function is always already fully-formed —
+            // either pre-quoted by _quote_agg_column()/_prefix_bare_identifiers(),
+            // or a raw caller-validated expression (custom/custom_calculation) that
+            // must be used verbatim. Without this, CI3's own auto-escaping (which
+            // only skips strings containing "(" — see DB_driver.php's
+            // protect_identifiers()) mangles any custom expression with no
+            // function-call wrapper (e.g. "value + 5", no parens) once the active
+            // driver's escape char is `"` instead of the backtick it was written
+            // (and only ever tested) against.
+            $subquery->select($aggregate_function, false);
             if ($is_subquery_relation) {
                 // Raw subquery: directly assign to qb_from to prevent CI from backtick-escaping it.
                 // The relation string is already well-formed, e.g. "(SELECT ...) transaction_sub".
@@ -372,7 +381,16 @@ trait AggregateProcessingTrait
             );
 
             // Use table alias in FROM clause for subquery
-            $subquery->select($aggregate_function);
+            // escape=false: $aggregate_function is always already fully-formed —
+            // either pre-quoted by _quote_agg_column()/_prefix_bare_identifiers(),
+            // or a raw caller-validated expression (custom/custom_calculation) that
+            // must be used verbatim. Without this, CI3's own auto-escaping (which
+            // only skips strings containing "(" — see DB_driver.php's
+            // protect_identifiers()) mangles any custom expression with no
+            // function-call wrapper (e.g. "value + 5", no parens) once the active
+            // driver's escape char is `"` instead of the backtick it was written
+            // (and only ever tested) against.
+            $subquery->select($aggregate_function, false);
             if ($is_subquery_relation) {
                 $subquery->qb_from[] = $aggregate_config['relation'];
             } else {
