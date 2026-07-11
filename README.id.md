@@ -18,7 +18,7 @@ Ekstensi drop-in dan backward-compatible untuk Query Builder CodeIgniter 3 yang 
 10. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
 11. [Query Kondisional](#query-kondisional)
 12. [Search](#search)
-13. [Pagination dengan calc_rows()](#pagination-dengan-calc_rows)
+13. [Pagination](#pagination)
 14. [Query Grouping](#query-grouping)
 15. [Chunking Dataset Besar](#chunking-dataset-besar)
 16. [pluck()](#pluck)
@@ -215,7 +215,7 @@ Dibangun langsung di atas query builder CodeIgniter 3 sendiri yang sudah driver-
 
 Dua hal yang perlu diketahui kalau kamu memakai driver selain MySQL:
 
-- **`calc_rows()`/`get_found_rows()`** memakai `SQL_CALC_FOUND_ROWS`/`FOUND_ROWS()` milik MySQL saat `dbdriver` adalah `mysqli`; driver lainnya otomatis memakai subquery `COUNT(*)` yang setara sebagai gantinya, jadi API publiknya (`$result->found_rows()`, `get_found_rows()`) berperilaku sama persis di kedua kasus — lihat [Pagination dengan calc_rows()](#pagination-dengan-calc_rows).
+- **`paginate()`/`calc_rows()`/`get_found_rows()`** selalu menghitung total lewat subquery `COUNT(*)` yang portable, di semua driver termasuk MySQL — lihat [Pagination](#pagination).
 - **Fungsi tanggal khusus MySQL** (`DATEDIFF`, `TIMESTAMPDIFF`, `CURDATE`, `CURTIME`) yang diizinkan di dalam `with_calculation()`/custom expression belum diterjemahkan ke sintaks tanggal driver lain — hindari dulu kalau kamu tidak memakai MySQL/MariaDB.
 
 ---
@@ -582,11 +582,53 @@ $this->db->search('admin', ['role', 'title'], false); // AND, bukan OR
 
 ---
 
-## Pagination dengan calc_rows()
+## Pagination
 
-> **Sudah deprecated di MySQL terbaru.** `calc_rows()`/`get_found_rows()` bergantung pada `SQL_CALC_FOUND_ROWS`, yang oleh MySQL sudah ditandai deprecated sejak versi 8.0.17 dan berpotensi dihapus total di rilis mendatang. Bagian ini tetap didokumentasikan untuk kode lama/eksisting yang sudah memakainya, tapi untuk kode baru lebih baik pakai `count_all_results()` secara terpisah (lihat [Contoh Lengkap](#contoh-lengkap)) — cara ini bekerja di semua versi MySQL, termasuk yang terbaru.
->
-> Di driver selain `mysqli` (lihat [Dukungan Driver Database](#dukungan-driver-database)), `calc_rows()` otomatis memakai subquery `COUNT(*)` yang portable sebagai ganti `SQL_CALC_FOUND_ROWS` — API publiknya sama, hasilnya sama, hanya query di baliknya yang berbeda.
+Dua cara melakukan pagination, keduanya sama-sama dibangun di atas mekanisme `COUNT(*)` yang portable (lihat `calc_rows()` di bawah) — bukan `SQL_CALC_FOUND_ROWS` milik MySQL, yang oleh MySQL sendiri sudah ditandai deprecated sejak versi 8.0.17 dan sebenarnya tidak pernah membuat ini lebih murah (tetap memaksa full scan di setiap baris yang cocok terlepas dari `LIMIT`, biaya yang sama seperti `COUNT(*)`).
+
+### `paginate()` — berbasis nomor halaman, gaya Laravel (disarankan)
+
+`paginate($per_page, $page)` — urutan argumen sengaja disamakan dengan `paginate($perPage, ...)` milik Laravel sendiri, jadi `->paginate(20)` sendirian berarti "20 per halaman" (halaman default ke 1), sama seperti di Laravel. Method ini otomatis menghitung `LIMIT`/`OFFSET`-nya, dan hasilnya membawa semua metadata pagination:
+
+```php
+$result = $this->db->where('status', 'active')
+    ->paginate(20, 2)   // 20 per halaman, halaman 2
+    ->get('users');
+
+$result->result();          // 20 baris untuk halaman 2
+$result->found_rows();      // total baris di semua halaman, mis. 347
+$result->current_page();    // 2
+$result->per_page();        // 20
+$result->last_page();       // 18
+$result->has_more_pages();  // true
+$result->from();            // 21 — posisi baris pertama di halaman ini (1-indexed)
+$result->to();               // 40 — posisi baris terakhir di halaman ini (1-indexed)
+
+// Bekerja juga dengan eager loading
+$result = $this->db->with_one('profile', 'user_id', 'id')
+    ->paginate(20)   // halaman default ke 1
+    ->get('users');
+```
+
+Semua method `CustomQueryBuilderResult` lain tetap berfungsi persis seperti sebelumnya — `result()`, `result_array()`, `row()`, `row_array()`, dll. tidak terpengaruh sama sekali; `paginate()` cuma menambah method-method di atas.
+
+Kalau kamu tetap mengisi `$limit`/`$offset` manual ke `get()`, itu yang menang dibanding nilai hasil hitungan `paginate()` — `paginate()` cuma mengisi kalau `get()` dipanggil tanpa keduanya.
+
+Butuh semua bentuk sebagai satu array (misalnya untuk response JSON)?
+
+```php
+$result->to_pagination_array();
+// [
+//   'data' => [...], 'current_page' => 2, 'per_page' => 20, 'total' => 347,
+//   'last_page' => 18, 'from' => 21, 'to' => 40, 'has_more_pages' => true,
+// ]
+```
+
+Tidak ada `next_page_url`/`prev_page_url` — library ini berada di bawah lapisan HTTP/routing dan tidak punya konteks request untuk bikin URL. Bangun link dari `current_page()`/`last_page()` di controller/route kamu sendiri.
+
+### `calc_rows()` — level lebih rendah: cuma total-nya, `LIMIT`/`OFFSET` kamu yang isi
+
+`paginate()` dibangun di atas ini. Pakai `calc_rows()` langsung kalau kamu mau total found-rows tapi tidak mau pagination berbasis nomor halaman (misalnya kamu sudah punya perhitungan offset sendiri):
 
 ```php
 $result = $this->db->select(['id', 'name'])
@@ -603,7 +645,7 @@ $result = $this->db->select(['id', 'name'])
     ->get('users', 20, 0);
 ```
 
-Menambahkan `SQL_CALC_FOUND_ROWS` di baliknya — satu query memberikan data halaman sekaligus total jumlahnya.
+Di baliknya ini menjalankan dua query — data halamannya, dan `SELECT COUNT(*) AS total FROM (<query kamu, tanpa LIMIT>) AS ...` — sama seperti kalau kamu memanggil `count_all_results()` dan `get()` secara terpisah (lihat [Contoh Lengkap](#contoh-lengkap)), hanya saja jadi satu rangkaian pemanggilan, bukan dua.
 
 ### `get_found_rows()` — cara lama mengambil total (tetap kompatibel)
 
@@ -614,7 +656,7 @@ $data  = $this->db->select(['id', 'name'])->calc_rows()->get('users', 20, 0);
 $total = $this->db->get_found_rows();
 ```
 
-Untuk kode baru, lebih baik pakai `$result->found_rows()` — dan lebih baik lagi pakai `count_all_results()` daripada keduanya, sesuai catatan deprecation di atas.
+Untuk kode baru, lebih baik pakai `$result->found_rows()`.
 
 ---
 
@@ -769,7 +811,7 @@ $users = $this->db->with_count('orders', 'user_id', 'id')
 $users = $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id')->get();
 ```
 
-**Prioritaskan panggilan `count_all_results()` terpisah daripada `calc_rows()`** untuk total pagination — `calc_rows()` bergantung pada `SQL_CALC_FOUND_ROWS` milik MySQL yang sudah deprecated (lihat [Pagination dengan calc_rows()](#pagination-dengan-calc_rows)).
+**Pakai `paginate()` untuk pagination berbasis nomor halaman** — lihat [Pagination](#pagination). Untuk penghitungan found-rows level lebih rendah, `calc_rows()` dan panggilan `count_all_results()` terpisah setara — keduanya sama-sama menjalankan `COUNT(*)` biasa di baliknya; pakai `calc_rows()` untuk kenyamanan satu pemanggilan, atau `count_all_results()` kalau kamu ingin total dan halaman sebagai dua langkah yang jelas terpisah.
 
 **Prioritaskan `join_*` daripada agregat `with_*` pada result set besar** — satu scan `GROUP BY` daripada N subquery berkorelasi.
 

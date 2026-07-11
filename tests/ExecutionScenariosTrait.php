@@ -434,4 +434,119 @@ trait ExecutionScenariosTrait
 
         $this->assertSame('15', (string) $result->row()->value_plus_bonus);
     }
+
+    public function test_paginate_returns_correct_page_and_pagination_metadata()
+    {
+        // 3 users total, 2 per page -> page 1 has Alice+Bob, more pages follow.
+        $result = $this->db->select(['id', 'name'])
+            ->order_by('id', 'ASC')
+            ->paginate(2, 1)
+            ->get('users');
+
+        $this->assertSame(['Alice', 'Bob'], array_column($result->result_array(), 'name'));
+        $this->assertSame(3, $result->found_rows());
+        $this->assertSame(1, $result->current_page());
+        $this->assertSame(2, $result->per_page());
+        $this->assertSame(2, $result->last_page());
+        $this->assertTrue($result->has_more_pages());
+        $this->assertSame(1, $result->from());
+        $this->assertSame(2, $result->to());
+    }
+
+    public function test_paginate_on_the_last_page_reports_no_more_pages()
+    {
+        $result = $this->db->select(['id', 'name'])
+            ->order_by('id', 'ASC')
+            ->paginate(2, 2)
+            ->get('users');
+
+        $this->assertSame(['Charlie'], array_column($result->result_array(), 'name'));
+        $this->assertSame(2, $result->current_page());
+        $this->assertFalse($result->has_more_pages());
+        $this->assertSame(3, $result->from());
+        $this->assertSame(3, $result->to());
+    }
+
+    public function test_paginate_still_exposes_the_normal_result_methods()
+    {
+        // BUG FIX regression guard: paginate() must not change the shape of
+        // the returned CustomQueryBuilderResult — result()/result_array()/
+        // row()/row_array() all still have to work exactly as before.
+        $result = $this->db->select(['id', 'name'])->paginate(2, 1)->get('users');
+
+        $this->assertIsArray($result->result());
+        $this->assertIsArray($result->result_array());
+        $this->assertIsObject($result->row());
+        $this->assertIsArray($result->row_array());
+    }
+
+    public function test_paginate_explicit_get_limit_overrides_computed_page_size()
+    {
+        // An explicit get($table, $limit, $offset) always wins over
+        // paginate()'s own computed LIMIT/OFFSET.
+        $result = $this->db->select(['id', 'name'])->paginate(2, 1)->get('users', 1, 0);
+        $this->assertSame(1, $result->num_rows());
+    }
+
+    public function test_paginate_works_together_with_eager_loading()
+    {
+        $result = $this->db->select(['id', 'name'])
+            ->with_many('scores', 'user_id', 'id')
+            ->order_by('id', 'ASC')
+            ->paginate(2, 1)
+            ->get('users');
+
+        $this->assertSame(2, $result->num_rows());
+        $this->assertSame(3, $result->found_rows());
+        $this->assertSame(1, $result->current_page());
+        $this->assertIsArray($result->row()->scores);
+    }
+
+    public function test_get_without_paginate_reports_null_pagination_fields()
+    {
+        $result = $this->db->select(['id', 'name'])->get('users');
+
+        $this->assertNull($result->current_page());
+        $this->assertNull($result->per_page());
+        $this->assertNull($result->last_page());
+        $this->assertFalse($result->has_more_pages());
+        $this->assertNull($result->from());
+        $this->assertNull($result->to());
+    }
+
+    public function test_paginate_rejects_non_positive_page_or_per_page()
+    {
+        try {
+            $this->db->paginate(0, 1);
+            $this->fail('Expected InvalidArgumentException for per_page=0');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('per_page', $e->getMessage());
+        }
+
+        $this->db->reset_query();
+
+        try {
+            $this->db->paginate(10, 0);
+            $this->fail('Expected InvalidArgumentException for page=0');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('page', $e->getMessage());
+        }
+    }
+
+    public function test_to_pagination_array_packages_data_and_metadata_together()
+    {
+        $result = $this->db->select(['id', 'name'])
+            ->order_by('id', 'ASC')
+            ->paginate(2, 1)
+            ->get('users');
+
+        $array = $result->to_pagination_array();
+
+        $this->assertSame(['Alice', 'Bob'], array_column($array['data'], 'name'));
+        $this->assertSame(3, $array['total']);
+        $this->assertSame(1, $array['current_page']);
+        $this->assertSame(2, $array['per_page']);
+        $this->assertSame(2, $array['last_page']);
+        $this->assertTrue($array['has_more_pages']);
+    }
 }

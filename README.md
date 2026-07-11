@@ -18,7 +18,7 @@ A drop-in, backward-compatible extension of CodeIgniter 3's Query Builder that a
 10. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
 11. [Conditional Queries](#conditional-queries)
 12. [Search](#search)
-13. [Pagination with calc_rows()](#pagination-with-calc_rows)
+13. [Pagination](#pagination)
 14. [Query Grouping](#query-grouping)
 15. [Chunking Large Datasets](#chunking-large-datasets)
 16. [pluck()](#pluck)
@@ -215,7 +215,7 @@ Built directly on CodeIgniter 3's own driver-agnostic query builder, so most of 
 
 Two things to know if you're on a non-MySQL driver:
 
-- **`calc_rows()`/`get_found_rows()`** use MySQL's `SQL_CALC_FOUND_ROWS`/`FOUND_ROWS()` when `dbdriver` is `mysqli`; every other driver transparently falls back to an equivalent `COUNT(*)` subquery instead, so the public API (`$result->found_rows()`, `get_found_rows()`) behaves identically either way — see [Pagination with calc_rows()](#pagination-with-calc_rows).
+- **`paginate()`/`calc_rows()`/`get_found_rows()`** always compute the total via a portable `COUNT(*)` subquery, on every driver including MySQL — see [Pagination](#pagination).
 - **MySQL-only date functions** (`DATEDIFF`, `TIMESTAMPDIFF`, `CURDATE`, `CURTIME`) allowed inside `with_calculation()`/custom expressions aren't translated for other drivers' date syntax yet — avoid them outside MySQL/MariaDB for now.
 
 ---
@@ -582,11 +582,53 @@ $this->db->search('admin', ['role', 'title'], false); // AND instead of OR
 
 ---
 
-## Pagination with calc_rows()
+## Pagination
 
-> **Deprecated in modern MySQL.** `calc_rows()`/`get_found_rows()` rely on `SQL_CALC_FOUND_ROWS`, which MySQL deprecated as of 8.0.17 and may remove entirely in a future release. They're documented here for existing/legacy code that already uses them, but for new code prefer a separate `count_all_results()` call (see [Complete Example](#complete-example)) — it works on every MySQL version, including current ones.
->
-> On any driver other than `mysqli` (see [Database Driver Support](#database-driver-support)), `calc_rows()` transparently uses a portable `COUNT(*)` subquery instead of `SQL_CALC_FOUND_ROWS` — same public API, same result, just a different query under the hood.
+Two ways to paginate, both built on the same portable `COUNT(*)` mechanism (see `calc_rows()` below) — not MySQL's `SQL_CALC_FOUND_ROWS`, which MySQL itself deprecated as of 8.0.17 and never actually made this cheaper (it forced a full scan of every matching row regardless of `LIMIT`, the same cost `COUNT(*)` already has).
+
+### `paginate()` — page-based, Laravel-style (recommended)
+
+`paginate($per_page, $page)` — argument order deliberately matches Laravel's own `paginate($perPage, ...)`, so `->paginate(20)` alone means "20 per page" (page defaults to 1), the same as it would in Laravel. It computes `LIMIT`/`OFFSET` for you and the result carries all the usual pagination metadata:
+
+```php
+$result = $this->db->where('status', 'active')
+    ->paginate(20, 2)   // 20 per page, page 2
+    ->get('users');
+
+$result->result();          // 20 rows for page 2
+$result->found_rows();      // total rows across every page, e.g. 347
+$result->current_page();    // 2
+$result->per_page();        // 20
+$result->last_page();       // 18
+$result->has_more_pages();  // true
+$result->from();            // 21 — 1-indexed position of the first row on this page
+$result->to();               // 40 — 1-indexed position of the last row on this page
+
+// Works with eager loading too
+$result = $this->db->with_one('profile', 'user_id', 'id')
+    ->paginate(20)   // page defaults to 1
+    ->get('users');
+```
+
+Every other `CustomQueryBuilderResult` method still works exactly as before — `result()`, `result_array()`, `row()`, `row_array()`, etc. are all unaffected; `paginate()` only adds the methods above.
+
+If you pass an explicit `$limit`/`$offset` to `get()` anyway, that wins over `paginate()`'s computed values — `paginate()` only fills them in when `get()` is called without them.
+
+Need the whole shape as one array (e.g. for a JSON API response)?
+
+```php
+$result->to_pagination_array();
+// [
+//   'data' => [...], 'current_page' => 2, 'per_page' => 20, 'total' => 347,
+//   'last_page' => 18, 'from' => 21, 'to' => 40, 'has_more_pages' => true,
+// ]
+```
+
+There's no `next_page_url`/`prev_page_url` — this library sits below the HTTP/routing layer and has no request context to build URLs from. Build links from `current_page()`/`last_page()` in your controller/route layer instead.
+
+### `calc_rows()` — lower-level: just the total, you supply `LIMIT`/`OFFSET`
+
+`paginate()` is built on top of this. Reach for `calc_rows()` directly when you want the found-rows total but don't want page-number-based pagination (e.g. you already compute your own offset):
 
 ```php
 $result = $this->db->select(['id', 'name'])
@@ -603,7 +645,7 @@ $result = $this->db->select(['id', 'name'])
     ->get('users', 20, 0);
 ```
 
-Adds `SQL_CALC_FOUND_ROWS` under the hood — one query gets you both the page of data and the total count.
+Under the hood this runs two queries — the page of data, and a `SELECT COUNT(*) AS total FROM (<your query, no LIMIT>) AS ...` — same as if you called `count_all_results()` and `get()` separately (see [Complete Example](#complete-example)), just as one method chain instead of two.
 
 ### `get_found_rows()` — old-style access to the total (backward compatible)
 
@@ -614,7 +656,7 @@ $data  = $this->db->select(['id', 'name'])->calc_rows()->get('users', 20, 0);
 $total = $this->db->get_found_rows();
 ```
 
-Prefer `$result->found_rows()` in new code — and prefer `count_all_results()` over both in new code, per the deprecation note above.
+Prefer `$result->found_rows()` in new code.
 
 ---
 
@@ -769,7 +811,7 @@ $users = $this->db->with_count('orders', 'user_id', 'id')
 $users = $this->db->from('users')->where_exists_relation('orders', 'user_id', 'id')->get();
 ```
 
-**Prefer a separate `count_all_results()` call over `calc_rows()`** for pagination totals — `calc_rows()` depends on MySQL's deprecated `SQL_CALC_FOUND_ROWS` (see [Pagination with calc_rows()](#pagination-with-calc_rows)).
+**Use `paginate()` for page-based pagination** — see [Pagination](#pagination). For lower-level found-rows counting, `calc_rows()` and a separate `count_all_results()` call are equivalent — both run a plain `COUNT(*)` under the hood; use `calc_rows()` for the one-call convenience, or `count_all_results()` when you want the count and the page as two clearly separate steps.
 
 **Prefer `join_*` over `with_*` aggregates on large result sets** — one `GROUP BY` scan instead of N correlated subqueries.
 

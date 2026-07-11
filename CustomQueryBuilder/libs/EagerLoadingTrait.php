@@ -142,14 +142,16 @@ trait EagerLoadingTrait
 
     /**
      * Execute query with eager loading relations
-     * 
+     *
      * @param string $table Table name (optional)
      * @param int|null $limit Limit number of results
      * @param int|null $offset Offset for results
-     * @param int|null $found_rows Total found rows from SQL_CALC_FOUND_ROWS
+     * @param int|null $found_rows Total found rows computed by calc_rows()
+     * @param int|null $page Page number set by paginate(), passed through to the result
+     * @param int|null $per_page Per-page size set by paginate(), passed through to the result
      * @return CustomQueryBuilderResult Query result with loaded relations
      */
-    protected function get_with_eager_loading($table = '', $limit = null, $offset = null, $found_rows = null)
+    protected function get_with_eager_loading($table = '', $limit = null, $offset = null, $found_rows = null, $page = null, $per_page = null)
     {
         $this->auto_include_relation_keys();
 
@@ -189,7 +191,7 @@ trait EagerLoadingTrait
 
         if ($result->num_rows() === 0) {
             $this->with_relations = [];
-            return new CustomQueryBuilderResult([], $found_rows);
+            return new CustomQueryBuilderResult([], $found_rows, null, $page, $per_page);
         }
 
         $data = $result->result_array();
@@ -198,7 +200,7 @@ trait EagerLoadingTrait
 
         $this->with_relations = [];
 
-        $custom_result = new CustomQueryBuilderResult($data, $found_rows);
+        $custom_result = new CustomQueryBuilderResult($data, $found_rows, null, $page, $per_page);
 
         return $custom_result;
     }

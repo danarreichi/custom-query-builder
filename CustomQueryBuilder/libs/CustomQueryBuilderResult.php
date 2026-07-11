@@ -23,7 +23,7 @@ class CustomQueryBuilderResult
     private $_num_rows;
 
     /**
-     * @var int|null Total found rows from SQL_CALC_FOUND_ROWS
+     * @var int|null Total found rows computed by calc_rows() (see CustomQueryBuilder::_count_found_rows())
      */
     private $_found_rows;
 
@@ -33,6 +33,16 @@ class CustomQueryBuilderResult
      * this wrapper is used in place of the native result.
      */
     private $_original_result;
+
+    /**
+     * @var int|null Page number set by paginate(), null if paginate() wasn't used
+     */
+    private $_page;
+
+    /**
+     * @var int|null Per-page size set by paginate(), null if paginate() wasn't used
+     */
+    private $_per_page;
 
     /**
      * @var array|null Memoized result() output. $_data is set once in the
@@ -51,15 +61,19 @@ class CustomQueryBuilderResult
      * Constructor
      *
      * @param array $data Result data
-     * @param int|null $found_rows Total found rows from SQL_CALC_FOUND_ROWS
+     * @param int|null $found_rows Total found rows computed by calc_rows() (see CustomQueryBuilder::_count_found_rows())
      * @param object|null $original_result Original driver result object to proxy uncommon calls to
+     * @param int|null $page Page number set by paginate(), null if paginate() wasn't used
+     * @param int|null $per_page Per-page size set by paginate(), null if paginate() wasn't used
      */
-    public function __construct($data, $found_rows = null, $original_result = null)
+    public function __construct($data, $found_rows = null, $original_result = null, $page = null, $per_page = null)
     {
         $this->_data = is_array($data) ? $data : [];
         $this->_num_rows = count($this->_data);
         $this->_found_rows = $found_rows;
         $this->_original_result = $original_result;
+        $this->_page = $page;
+        $this->_per_page = $per_page;
     }
 
     /**
@@ -151,9 +165,9 @@ class CustomQueryBuilderResult
     }
 
     /**
-     * Get total found rows from SQL_CALC_FOUND_ROWS
-     * 
-     * This method returns the total number of rows that would have been 
+     * Get total found rows computed by a preceding calc_rows() query
+     *
+     * This method returns the total number of rows that would have been
      * returned without LIMIT when calc_rows() was used.
      * 
      * Example:
@@ -169,6 +183,104 @@ class CustomQueryBuilderResult
     public function found_rows()
     {
         return $this->_found_rows;
+    }
+
+    /**
+     * Current page number, as passed to paginate() — see CustomQueryBuilder::paginate().
+     *
+     * @return int|null Null if paginate() wasn't used for this query
+     */
+    public function current_page()
+    {
+        return $this->_page;
+    }
+
+    /**
+     * Per-page size, as passed to paginate().
+     *
+     * @return int|null Null if paginate() wasn't used for this query
+     */
+    public function per_page()
+    {
+        return $this->_per_page;
+    }
+
+    /**
+     * Total number of pages, derived from found_rows()/per_page().
+     *
+     * @return int|null Null if paginate() wasn't used for this query
+     */
+    public function last_page()
+    {
+        if ($this->_page === null || $this->_per_page === null || $this->_found_rows === null)
+            return null;
+
+        return (int) max(1, (int) ceil($this->_found_rows / $this->_per_page));
+    }
+
+    /**
+     * Whether there's at least one more page after the current one.
+     *
+     * @return bool False if paginate() wasn't used for this query
+     */
+    public function has_more_pages()
+    {
+        $last_page = $this->last_page();
+        if ($last_page === null)
+            return false;
+
+        return $this->_page < $last_page;
+    }
+
+    /**
+     * 1-indexed position of this page's first row within the full result set
+     * (e.g. page 3 at 20 per page -> 41), or null on an empty page/result.
+     *
+     * @return int|null
+     */
+    public function from()
+    {
+        if ($this->_page === null || $this->_per_page === null || empty($this->_found_rows))
+            return null;
+
+        return (($this->_page - 1) * $this->_per_page) + 1;
+    }
+
+    /**
+     * 1-indexed position of this page's last row within the full result set
+     * (e.g. page 3 at 20 per page, 47 total rows -> 47, not 60), or null on an
+     * empty page/result.
+     *
+     * @return int|null
+     */
+    public function to()
+    {
+        if ($this->_page === null || $this->_per_page === null || empty($this->_found_rows))
+            return null;
+
+        return min($this->_page * $this->_per_page, $this->_found_rows);
+    }
+
+    /**
+     * Laravel-shaped pagination array — data plus every pagination field
+     * above, packaged for e.g. a JSON API response. Prefer the individual
+     * methods (current_page(), last_page(), etc.) when you only need one or
+     * two fields; use this when you want the whole shape at once.
+     *
+     * @return array{data: array, current_page: int|null, per_page: int|null, total: int|null, last_page: int|null, from: int|null, to: int|null, has_more_pages: bool}
+     */
+    public function to_pagination_array()
+    {
+        return [
+            'data' => $this->result_array(),
+            'current_page' => $this->current_page(),
+            'per_page' => $this->per_page(),
+            'total' => $this->found_rows(),
+            'last_page' => $this->last_page(),
+            'from' => $this->from(),
+            'to' => $this->to(),
+            'has_more_pages' => $this->has_more_pages(),
+        ];
     }
 
     /**

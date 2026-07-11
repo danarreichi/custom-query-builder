@@ -159,7 +159,7 @@
   <header class="page">
     <p class="eyebrow">CustomQueryBuilder — Test Run</p>
     <h1>Full driver parity: MySQL (mysqli) vs SQLite (sqlite3)</h1>
-    <p class="lede">CompiledSqlTest, EdgeCaseTest, and ExecutionTest each now have a SQLite twin sharing the same scenarios via PHP traits (ExecutionScenariosTrait, EdgeCaseScenariosTrait) or a mechanically-generated double-quote variant (SqliteCompiledSqlTest). 118 tests run on each driver — full parity, not a partial smoke suite.</p>
+    <p class="lede">CompiledSqlTest, EdgeCaseTest, and ExecutionTest each have a SQLite twin sharing the same scenarios via PHP traits (ExecutionScenariosTrait, EdgeCaseScenariosTrait) or a mechanically-generated double-quote variant (SqliteCompiledSqlTest). Now includes the new paginate() feature (page-based pagination built on calc_rows()'s portable COUNT(*) mechanism) and the calc_rows()/get_with_calc_rows() simplification that dropped SQL_CALC_FOUND_ROWS entirely. 126 tests run on each driver — full parity, not a partial smoke suite.</p>
   </header>
 
   <div class="callout">
@@ -185,7 +185,7 @@
     <div class="section-head">
       <div>
         <h2><span class="driver-badge">mysqli</span> MySQL suite</h2>
-        <p>vendor/bin/phpunit --testsuite mysql — CompiledSqlTest + EdgeCaseTest + ExecutionTest, against a live MySQL connection (password swapped in for the run per CLAUDE.md's ritual, reverted to blank afterward).</p>
+        <p>vendor/bin/phpunit --testsuite mysql — CompiledSqlTest + EdgeCaseTest + ExecutionTest (now including paginate() coverage), against a live MySQL connection (password swapped in for the run per CLAUDE.md's ritual, reverted to blank afterward).</p>
       </div>
       <input class="search" id="search-mysql" type="search" placeholder="Filter tests…" aria-label="Filter MySQL tests">
     </div>
@@ -214,7 +214,7 @@
   </section>
 
   <footer class="page">
-    Generated from two separate live runs of <code class="mono">vendor/bin/phpunit --testdox --testsuite &lt;mysql|sqlite&gt;</code> against this session's driver-agnostic fixes: <code class="mono">_is_real_database_error()</code> (sqlite3's stale-101 <code class="mono">error()</code> quirk), <code class="mono">_qi()</code> driver-aware identifier quoting, the widened function-call-detection regex in <code class="mono">has_only_allowed_function_calls()</code>, and the portable <code class="mono">calc_rows()</code>/<code class="mono">found_rows()</code> fallback. No results here are hand-written.
+    Generated from two separate live runs of <code class="mono">vendor/bin/phpunit --testdox --testsuite &lt;mysql|sqlite&gt;</code> against this session's driver-agnostic fixes and the new <code class="mono">paginate()</code> feature: <code class="mono">_is_real_database_error()</code> (sqlite3's stale-101 <code class="mono">error()</code> quirk), <code class="mono">_qi()</code> driver-aware identifier quoting, the widened function-call-detection regex in <code class="mono">has_only_allowed_function_calls()</code>, the portable <code class="mono">_count_found_rows()</code> (used for every driver including mysqli — <code class="mono">SQL_CALC_FOUND_ROWS</code> dropped entirely), and <code class="mono">paginate($per_page, $page)</code> (argument order matches Laravel's own <code class="mono">paginate($perPage, ...)</code>). No results here are hand-written.
   </footer>
 </div>
 
@@ -810,6 +810,46 @@ const DATA = {
         "class": "Execution",
         "name": "With calculation handles expression without function wrapper",
         "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Paginate returns correct page and pagination metadata",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Paginate on the last page reports no more pages",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Paginate still exposes the normal result methods",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Paginate explicit get limit overrides computed page size",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Paginate works together with eager loading",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Get without paginate reports null pagination fields",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "Paginate rejects non positive page or per page",
+        "status": "pass"
+    },
+    {
+        "class": "Execution",
+        "name": "To pagination array packages data and metadata together",
+        "status": "pass"
     }
 ],
     "sqlite": [
@@ -1401,6 +1441,46 @@ const DATA = {
     {
         "class": "Sqlite Execution",
         "name": "With calculation handles expression without function wrapper",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Paginate returns correct page and pagination metadata",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Paginate on the last page reports no more pages",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Paginate still exposes the normal result methods",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Paginate explicit get limit overrides computed page size",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Paginate works together with eager loading",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Get without paginate reports null pagination fields",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "Paginate rejects non positive page or per page",
+        "status": "pass"
+    },
+    {
+        "class": "Sqlite Execution",
+        "name": "To pagination array packages data and metadata together",
         "status": "pass"
     }
 ]

@@ -87,21 +87,31 @@ class CustomQueryBuilder extends CI_DB_query_builder
     protected $debug = true;
 
     /**
-     * @var bool Flag to enable SQL_CALC_FOUND_ROWS
+     * @var bool Flag to enable calc_rows()'s found-rows counting for the next get()
      */
     protected $_calc_rows_enabled = false;
 
     /**
      * @var int|null Cached result of the most recent calc_rows() query, set by
-     * get_with_calc_rows(). get_found_rows() reads this instead of re-querying
-     * MySQL's FOUND_ROWS() directly — that function only reflects the row
-     * count of the immediately preceding SELECT, and get_with_calc_rows()
-     * itself already runs a "SELECT FOUND_ROWS()" query internally to build
-     * the returned CustomQueryBuilderResult, which "used up" that value
-     * before get_found_rows() (the documented backward-compatible way to
-     * read it) ever got a chance to query it again.
+     * get_with_calc_rows() via _count_found_rows(). get_found_rows() reads this
+     * cached value instead of re-querying — there's no equivalent of MySQL's
+     * FOUND_ROWS() to re-query anyway, since get_with_calc_rows() computes the
+     * total with a plain COUNT(*) subquery rather than SQL_CALC_FOUND_ROWS
+     * (dropped: deprecated since MySQL 8.0.17, and never actually cheaper —
+     * it still forces a full scan of every matching row despite the LIMIT).
      */
     protected $_last_found_rows = null;
+
+    /**
+     * @var int|null Page number set by paginate(), consumed by get() to compute
+     * LIMIT/OFFSET when the caller doesn't pass them explicitly.
+     */
+    protected $_pagination_page = null;
+
+    /**
+     * @var int|null Per-page size set by paginate() — see $_pagination_page.
+     */
+    protected $_pagination_per_page = null;
 
     /**
      * @var string|null Temporary storage for table name from get() method
@@ -434,12 +444,14 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
-     * Enable SQL_CALC_FOUND_ROWS for the current SELECT statement
-     * 
-     * This function automatically adds SQL_CALC_FOUND_ROWS to whatever
-     * SELECT fields are already defined, allowing you to use arrays
-     * and normal select() methods as usual. Works with eager loading too!
-     * 
+     * Enable found-rows counting for the current SELECT statement
+     *
+     * Marks the query so get_with_calc_rows() also computes the total row
+     * count the query would have matched without LIMIT (via a COUNT(*)
+     * subquery — see _count_found_rows()), alongside the normal paginated
+     * result. Works with array selects, normal select() methods, and eager
+     * loading, all as usual.
+     *
      * When using calc_rows(), the result will include found_rows() method
      * that can be called directly on the result object.
      * 
@@ -465,14 +477,58 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function calc_rows()
     {
-        // Mark that we want to use SQL_CALC_FOUND_ROWS
+        // Mark that we want get_with_calc_rows() to also count found rows
         $this->_calc_rows_enabled = true;
         return $this;
     }
 
     /**
-     * Get the total count from SQL_CALC_FOUND_ROWS
-     * 
+     * Laravel-style page-based pagination
+     *
+     * Builds on calc_rows() (same COUNT(*)-based total, see _count_found_rows()):
+     * computes LIMIT/OFFSET from $per_page/$page for you, and the returned
+     * result exposes current_page()/per_page()/last_page()/has_more_pages()/
+     * from()/to() alongside the usual result()/result_array()/found_rows().
+     *
+     * Argument order deliberately matches Laravel's own paginate($perPage, ...):
+     * $per_page comes first (so a single-argument ->paginate(20) means "20 per
+     * page", not "page 20") and defaults to Laravel's own default of 15.
+     *
+     * If you pass an explicit $limit/$offset to get() anyway, that takes
+     * priority over paginate()'s computed values — paginate() only fills in
+     * LIMIT/OFFSET when get() is called without them.
+     *
+     * Example:
+     * $result = $this->db->where('status', 'active')->paginate(20, 2)->get('users');
+     * $result->result();         // 20 rows (page 2)
+     * $result->found_rows();     // total rows across every page, e.g. 347
+     * $result->current_page();   // 2
+     * $result->per_page();       // 20
+     * $result->last_page();      // 18
+     * $result->has_more_pages(); // true
+     *
+     * @param int $per_page Rows per page
+     * @param int $page Page number, 1-indexed
+     * @return $this
+     */
+    public function paginate($per_page = 15, $page = 1)
+    {
+        if (!is_numeric($per_page) || (int) $per_page < 1) {
+            throw new InvalidArgumentException('paginate(): $per_page must be an integer >= 1.');
+        }
+        if (!is_numeric($page) || (int) $page < 1) {
+            throw new InvalidArgumentException('paginate(): $page must be an integer >= 1.');
+        }
+
+        $this->_pagination_per_page = (int) $per_page;
+        $this->_pagination_page = (int) $page;
+
+        return $this->calc_rows();
+    }
+
+    /**
+     * Get the total count computed by a preceding calc_rows() query
+     *
      * This function should be called after executing a query with calc_rows()
      * to get the total number of rows that would have been returned without LIMIT.
      * Works with both regular queries and queries with eager loading.
@@ -496,15 +552,12 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     public function get_found_rows()
     {
-        if ($this->_last_found_rows !== null) {
-            return $this->_last_found_rows;
-        }
-
-        $query = $this->query("SELECT FOUND_ROWS() as total");
-        if ($query && $query->num_rows() > 0) {
-            return (int) $query->row()->total;
-        }
-        return 0;
+        // Only meaningful right after a calc_rows() query — that's what
+        // populates $_last_found_rows. Called any other way, there's no
+        // FOUND_ROWS()-style database state to fall back to (get_with_calc_rows()
+        // no longer runs SQL_CALC_FOUND_ROWS at all — see _count_found_rows()),
+        // so 0 is the honest answer rather than a stale/misleading query result.
+        return $this->_last_found_rows !== null ? $this->_last_found_rows : 0;
     }
 
     /**
@@ -833,9 +886,16 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->from($table);
         }
 
-        // Handle SQL_CALC_FOUND_ROWS separately using compiled query
-        if ($this->_calc_rows_enabled)
+        // Handle calc_rows()'s found-rows counting separately using compiled query
+        if ($this->_calc_rows_enabled) {
+            // paginate() only fills in LIMIT/OFFSET when the caller didn't pass
+            // their own — an explicit get($table, $limit, $offset) always wins.
+            if ($limit === null && $this->_pagination_per_page !== null) {
+                $limit = $this->_pagination_per_page;
+                $offset = ($this->_pagination_page - 1) * $this->_pagination_per_page;
+            }
             return $this->get_with_calc_rows($limit, $offset);
+        }
 
         $this->_flush_pending_query_state();
 
@@ -865,7 +925,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
-     * Execute query with SQL_CALC_FOUND_ROWS using compiled query approach
+     * Execute query with calc_rows()'s COUNT(*)-based found-rows counting
      * Now supports eager loading by checking for relations first
      * 
      * @param int|null $limit Limit number of results
@@ -874,13 +934,19 @@ class CustomQueryBuilder extends CI_DB_query_builder
      */
     protected function get_with_calc_rows($limit = null, $offset = null)
     {
+        // Captured up front: reset_query() (called below, in the non-eager
+        // branch) clears $_pagination_page/$_pagination_per_page, so these
+        // locals are what the returned CustomQueryBuilderResult actually gets.
+        $page = $this->_pagination_page;
+        $per_page = $this->_pagination_per_page;
+
         $this->_flush_pending_query_state();
 
         // Check if we have eager loading relations
         if (!empty($this->with_relations)) {
             // For queries with eager loading, we need to use a different approach
             // We'll temporarily disable calc_rows, get the data with eager loading,
-            // then run a separate count query with SQL_CALC_FOUND_ROWS
+            // then run a separate COUNT(*) query for the total
 
             // BACKUP: Simpan with_relations sebelum melakukan query count
             $backup_with_relations = $this->with_relations;
@@ -896,38 +962,9 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $count_query->pending_aggregates = []; // Remove aggregates for count query
             $compiled_count_query = $count_query->get_compiled_select('', false);
 
-            if ($this->dbdriver === 'mysqli') {
-                // Add LIMIT for the count query if specified
-                if ($limit !== null) {
-                    $compiled_count_query .= ' LIMIT ' . (int) $limit;
-                    if ($offset !== null && $offset > 0)
-                        $compiled_count_query .= ' OFFSET ' . (int) $offset;
-                }
-
-                // Execute count query with SQL_CALC_FOUND_ROWS
-                $count_query_with_calc_rows = preg_replace('/^SELECT\s+/i', 'SELECT SQL_CALC_FOUND_ROWS ', $compiled_count_query);
-                $this->query($count_query_with_calc_rows); // This sets FOUND_ROWS() for later use
-
-                // Store the count query before executing FOUND_ROWS()
-                $main_count_query = $this->last_query();
-
-                // Get the found_rows count
-                $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
-                $found_rows = 0;
-                if ($found_rows_query && $found_rows_query->num_rows() > 0)
-                    $found_rows = (int) $found_rows_query->row()->total;
-                $this->_last_found_rows = $found_rows;
-
-                // Restore the count query as last_query for debugging purposes
-                $this->queries[] = $main_count_query;
-            } else {
-                // Portable fallback: SQL_CALC_FOUND_ROWS/FOUND_ROWS() are
-                // MySQL-only. Wrap the unlimited compiled query in a
-                // COUNT(*) subquery instead — works on every CI3 driver.
-                $found_rows = $this->_portable_found_rows($compiled_count_query);
-                $this->_last_found_rows = $found_rows;
-                $this->queries[] = $compiled_count_query;
-            }
+            $found_rows = $this->_count_found_rows($compiled_count_query);
+            $this->_last_found_rows = $found_rows;
+            $this->queries[] = $compiled_count_query;
 
             // RESTORE: Kembalikan with_relations setelah query count selesai
             $this->with_relations = $backup_with_relations;
@@ -941,7 +978,7 @@ class CustomQueryBuilder extends CI_DB_query_builder
             $this->_calc_rows_enabled = false;
 
             // Now get the actual data with eager loading
-            $eager_result = $this->get_with_eager_loading('', $limit, $offset, $found_rows);
+            $eager_result = $this->get_with_eager_loading('', $limit, $offset, $found_rows, $page, $per_page);
 
             // Return the eager result (already has found_rows)
             return $eager_result;
@@ -963,41 +1000,24 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->_calc_rows_enabled = false;
         $this->reset_query();
 
-        if ($this->dbdriver === 'mysqli') {
-            // Replace SELECT with SELECT SQL_CALC_FOUND_ROWS
-            $final_query = preg_replace('/^SELECT\s+/i', 'SELECT SQL_CALC_FOUND_ROWS ', $limited_query);
+        // Run the limited query for the actual result set, then compute the
+        // true (unlimited) total via a COUNT(*) subquery over $compiled_query.
+        // Used to use MySQL's SQL_CALC_FOUND_ROWS/FOUND_ROWS() here instead —
+        // dropped in favor of COUNT(*) everywhere: SQL_CALC_FOUND_ROWS has
+        // been deprecated since MySQL 8.0.17, and never actually saved the
+        // work its name implies (it forces a full scan of every matching row
+        // even with LIMIT, the same cost COUNT(*) already has) — so there was
+        // no performance reason to keep a MySQL-only code path around.
+        $result = $this->query($limited_query);
+        $main_query = $this->last_query();
 
-            // Execute the raw query
-            $result = $this->query($final_query);
+        $found_rows = $this->_count_found_rows($compiled_query);
+        $this->_last_found_rows = $found_rows;
 
-            // Store the main query before executing FOUND_ROWS()
-            $main_query = $this->last_query();
+        $this->queries[] = $main_query;
 
-            // Get the found_rows count
-            $found_rows_query = $this->query("SELECT FOUND_ROWS() as total");
-            $found_rows = 0;
-            if ($found_rows_query && $found_rows_query->num_rows() > 0)
-                $found_rows = (int) $found_rows_query->row()->total;
-            $this->_last_found_rows = $found_rows;
-
-            // Restore the main query as last_query for debugging purposes
-            $this->queries[] = $main_query;
-        } else {
-            // Portable fallback: SQL_CALC_FOUND_ROWS/FOUND_ROWS() are
-            // MySQL-only. Run the limited query for the actual result set,
-            // then compute the true (unlimited) total via a COUNT(*)
-            // subquery over $compiled_query — works on every CI3 driver.
-            $result = $this->query($limited_query);
-            $main_query = $this->last_query();
-
-            $found_rows = $this->_portable_found_rows($compiled_query);
-            $this->_last_found_rows = $found_rows;
-
-            $this->queries[] = $main_query;
-        }
-
-        // Return CustomQueryBuilderResult with found_rows
-        return new CustomQueryBuilderResult($result->result_array(), $found_rows);
+        // Return CustomQueryBuilderResult with found_rows (+ pagination info, if paginate() was used)
+        return new CustomQueryBuilderResult($result->result_array(), $found_rows, null, $page, $per_page);
     }
 
     /**
@@ -1119,14 +1139,17 @@ class CustomQueryBuilder extends CI_DB_query_builder
     }
 
     /**
-     * Portable replacement for MySQL's SQL_CALC_FOUND_ROWS/FOUND_ROWS(), used
-     * by get_with_calc_rows() on every driver except mysqli: wraps the given
-     * (unlimited) compiled SELECT in a COUNT(*) subquery and executes it.
+     * Compute calc_rows()'s "total without LIMIT" for get_with_calc_rows(),
+     * on every driver: wraps the given (unlimited) compiled SELECT in a
+     * COUNT(*) subquery and executes it. Portable across every CI3 driver,
+     * and deliberately used for mysqli too — MySQL's own SQL_CALC_FOUND_ROWS
+     * is deprecated (since 8.0.17) and never actually cheaper, since it still
+     * forces a full scan of every matching row despite the LIMIT.
      *
      * @param string $compiled_query_no_limit Compiled SELECT, without LIMIT/OFFSET
      * @return int
      */
-    protected function _portable_found_rows($compiled_query_no_limit)
+    protected function _count_found_rows($compiled_query_no_limit)
     {
         $count_result = $this->query('SELECT COUNT(*) AS total FROM (' . $compiled_query_no_limit . ') AS _cqb_count_wrap');
         if ($count_result && $count_result->num_rows() > 0)
@@ -1414,6 +1437,8 @@ class CustomQueryBuilder extends CI_DB_query_builder
         $this->_in_group_context = 0;
         $this->_calc_rows_enabled = false;
         $this->_last_found_rows = null;
+        $this->_pagination_page = null;
+        $this->_pagination_per_page = null;
         $this->_temp_table_name = null;
         // A freshly reset instance (typically a clone used to build a relation/aggregate
         // subquery) must not inherit the outer query's in-flight reorder bookkeeping —
