@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "custom-query-builder-docs": {
+      "command": "node",
+      "args": ["mcp-server/server.js"]
+    }
+  }
+}
