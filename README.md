@@ -8,25 +8,26 @@ A drop-in, backward-compatible extension of CodeIgniter 3's Query Builder that a
 
 1. [Installation](#installation)
 2. [Trying It Out (Clone & Run)](#trying-it-out-clone--run)
-3. [Quick Start](#quick-start)
-4. [The Result Object](#the-result-object)
-5. [Enhanced Basic Methods](#enhanced-basic-methods)
-6. [Eager Loading Relations](#eager-loading-relations)
-7. [Aggregate Subqueries](#aggregate-subqueries)
-8. [JOIN-Based Aggregates (Lighter Alternative)](#join-based-aggregates-lighter-alternative)
-9. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
-10. [Conditional Queries](#conditional-queries)
-11. [Search](#search)
-12. [Pagination with calc_rows()](#pagination-with-calc_rows)
-13. [Query Grouping](#query-grouping)
-14. [Chunking Large Datasets](#chunking-large-datasets)
-15. [pluck()](#pluck)
-16. [Transactions](#transactions)
-17. [Raw query()](#raw-query)
-18. [Security](#security)
-19. [Best Practices](#best-practices)
-20. [Complete Example](#complete-example)
-21. [Notes & Caveats](#notes--caveats)
+3. [Database Driver Support](#database-driver-support)
+4. [Quick Start](#quick-start)
+5. [The Result Object](#the-result-object)
+6. [Enhanced Basic Methods](#enhanced-basic-methods)
+7. [Eager Loading Relations](#eager-loading-relations)
+8. [Aggregate Subqueries](#aggregate-subqueries)
+9. [JOIN-Based Aggregates (Lighter Alternative)](#join-based-aggregates-lighter-alternative)
+10. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
+11. [Conditional Queries](#conditional-queries)
+12. [Search](#search)
+13. [Pagination with calc_rows()](#pagination-with-calc_rows)
+14. [Query Grouping](#query-grouping)
+15. [Chunking Large Datasets](#chunking-large-datasets)
+16. [pluck()](#pluck)
+17. [Transactions](#transactions)
+18. [Raw query()](#raw-query)
+19. [Security](#security)
+20. [Best Practices](#best-practices)
+21. [Complete Example](#complete-example)
+22. [Notes & Caveats](#notes--caveats)
 
 ---
 
@@ -137,13 +138,13 @@ The section above is for wiring this library into your **own** CodeIgniter 3 app
 
 There are two sandboxes, both driven by the **same** database config file:
 
-- **`tests/`** — an automated PHPUnit suite (117 tests) that asserts exact compiled SQL strings and real query results. This is the fast, CI-friendly way to verify the library works.
-- **`test-ci3/`** — a full CodeIgniter 3 install with a manual smoke-test controller (`Test_custom_qb`) that exercises ~68 scenarios and prints plain-text output with `(expect ...)` annotations, viewable in a browser.
+- **`tests/`** — an automated PHPUnit suite (118 tests) that asserts exact compiled SQL strings and real query results, run **twice**: once against MySQL, once against an in-memory SQLite connection (same 118 scenarios both times — see [Database Driver Support](#database-driver-support)). This is the fast, CI-friendly way to verify the library works.
+- **`test-ci3/`** — a full CodeIgniter 3 install with a manual smoke-test controller (`Test_custom_qb`) that exercises ~68 scenarios against MySQL and prints plain-text output with `(expect ...)` annotations, viewable in a browser.
 
 ### Prerequisites
 
 - **PHP 8.1+** and **Composer** (for `tests/` — the *library itself* stays PHP 5.6-compatible; only the PHPUnit tooling needs a modern PHP)
-- **MySQL/MariaDB** reachable locally
+- **MySQL/MariaDB** reachable locally, for the MySQL test suite and `test-ci3` — the SQLite test suite needs nothing beyond PHP's `sqlite3` extension (commonly enabled by default)
 
 ### 1. Clone and point it at a database
 
@@ -172,19 +173,22 @@ No manual schema setup needed: the `scores`, `category_scores`, and `profiles` f
 ```bash
 cd tests
 composer install
-vendor/bin/phpunit
+vendor/bin/phpunit                      # MySQL suite (default) — needs the password set above
+vendor/bin/phpunit --testsuite sqlite   # SQLite suite — no password, no server, nothing to configure
 ```
 
 ```
 PHPUnit 9.6.35 by Sebastian Bergmann and contributors.
 
-...............................................................  63 / 117 ( 55%)
-...................................................             117 / 117 (100%)
+...............................................................  63 / 118 ( 53%)
+.......................................................         118 / 118 (100%)
 
-OK (117 tests, 171 assertions)
+OK (118 tests, 172 assertions)
 ```
 
-See [`tests/CompiledSqlTest.php`](tests/CompiledSqlTest.php) (exact-SQL-string assertions) and [`tests/ExecutionTest.php`](tests/ExecutionTest.php) (real query-result assertions) for what's covered.
+Both commands run the identical 118 scenarios — `CompiledSqlTest`/`EdgeCaseTest`/`ExecutionTest` against MySQL, `SqliteCompiledSqlTest`/`SqliteEdgeCaseTest`/`SqliteExecutionTest` against SQLite. See [`tests/CompiledSqlTest.php`](tests/CompiledSqlTest.php) (exact-SQL-string assertions) and [`tests/ExecutionTest.php`](tests/ExecutionTest.php) (real query-result assertions) for what's covered.
+
+> **Always run the two suites as separate commands, never combined in one `vendor/bin/phpunit` invocation.** CodeIgniter 3's own identifier-escaping code caches its quote character the first time it runs, so mixing a MySQL-backed test and a SQLite-backed one in the same PHP process makes the second driver's exact-SQL-string assertions fail spuriously — a CI3 quirk, not a bug in this library. `tests/phpunit.xml` already defines `mysql`/`sqlite` as two separate named testsuites for exactly this reason.
 
 > If your environment has multiple PHP versions installed (e.g. Laragon/XAMPP) and `php`/`composer` on your `PATH` resolve to something older than 8.1, point at the right binary explicitly: `/path/to/php8.1 /path/to/composer.phar install` and `/path/to/php8.1 vendor/bin/phpunit`.
 
@@ -196,6 +200,23 @@ php -S 127.0.0.1:8080 index.php
 ```
 
 Then open `http://127.0.0.1:8080/Test_custom_qb` in a browser — it walks through eager loading, `WHERE EXISTS`/`WHERE HAS`, aggregates, grouping, SQL-injection rejection, and more, printing the compiled SQL and/or result alongside an `(expect ...)` comment so you can eyeball correctness.
+
+---
+
+## Database Driver Support
+
+Built directly on CodeIgniter 3's own driver-agnostic query builder, so most of the library works unmodified across whichever CI3 driver you configure — identifier quoting (`` ` `` vs `"` vs `[...]`) automatically follows the active driver's escape character, no code changes needed on your end.
+
+| Driver | Status |
+|---|---|
+| MySQL / MariaDB (`mysqli`) | ✅ Fully supported — the primary target, 118 tests |
+| SQLite (`sqlite3`) | ✅ Fully supported — same 118 tests, in-memory or file-based |
+| PostgreSQL, SQL Server, Oracle, PDO subdrivers | ⚠️ Untested — not yet run against a real connection |
+
+Two things to know if you're on a non-MySQL driver:
+
+- **`calc_rows()`/`get_found_rows()`** use MySQL's `SQL_CALC_FOUND_ROWS`/`FOUND_ROWS()` when `dbdriver` is `mysqli`; every other driver transparently falls back to an equivalent `COUNT(*)` subquery instead, so the public API (`$result->found_rows()`, `get_found_rows()`) behaves identically either way — see [Pagination with calc_rows()](#pagination-with-calc_rows).
+- **MySQL-only date functions** (`DATEDIFF`, `TIMESTAMPDIFF`, `CURDATE`, `CURTIME`) allowed inside `with_calculation()`/custom expressions aren't translated for other drivers' date syntax yet — avoid them outside MySQL/MariaDB for now.
 
 ---
 
@@ -564,6 +585,8 @@ $this->db->search('admin', ['role', 'title'], false); // AND instead of OR
 ## Pagination with calc_rows()
 
 > **Deprecated in modern MySQL.** `calc_rows()`/`get_found_rows()` rely on `SQL_CALC_FOUND_ROWS`, which MySQL deprecated as of 8.0.17 and may remove entirely in a future release. They're documented here for existing/legacy code that already uses them, but for new code prefer a separate `count_all_results()` call (see [Complete Example](#complete-example)) — it works on every MySQL version, including current ones.
+>
+> On any driver other than `mysqli` (see [Database Driver Support](#database-driver-support)), `calc_rows()` transparently uses a portable `COUNT(*)` subquery instead of `SQL_CALC_FOUND_ROWS` — same public API, same result, just a different query under the hood.
 
 ```php
 $result = $this->db->select(['id', 'name'])

@@ -8,25 +8,26 @@ Ekstensi drop-in dan backward-compatible untuk Query Builder CodeIgniter 3 yang 
 
 1. [Instalasi](#instalasi)
 2. [Mencoba Proyek Ini (Clone & Jalankan)](#mencoba-proyek-ini-clone--jalankan)
-3. [Mulai Cepat](#mulai-cepat)
-4. [Objek Result](#objek-result)
-5. [Method Dasar yang Diperluas](#method-dasar-yang-diperluas)
-6. [Eager Loading Relasi](#eager-loading-relasi)
-7. [Subquery Agregat](#subquery-agregat)
-8. [Agregat Berbasis JOIN (Alternatif Lebih Ringan)](#agregat-berbasis-join-alternatif-lebih-ringan)
-9. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
-10. [Query Kondisional](#query-kondisional)
-11. [Search](#search)
-12. [Pagination dengan calc_rows()](#pagination-dengan-calc_rows)
-13. [Query Grouping](#query-grouping)
-14. [Chunking Dataset Besar](#chunking-dataset-besar)
-15. [pluck()](#pluck)
-16. [Transaksi](#transaksi)
-17. [query() Mentah](#query-mentah)
-18. [Keamanan](#keamanan)
-19. [Praktik Terbaik](#praktik-terbaik)
-20. [Contoh Lengkap](#contoh-lengkap)
-21. [Catatan & Hal yang Perlu Diperhatikan](#catatan--hal-yang-perlu-diperhatikan)
+3. [Dukungan Driver Database](#dukungan-driver-database)
+4. [Mulai Cepat](#mulai-cepat)
+5. [Objek Result](#objek-result)
+6. [Method Dasar yang Diperluas](#method-dasar-yang-diperluas)
+7. [Eager Loading Relasi](#eager-loading-relasi)
+8. [Subquery Agregat](#subquery-agregat)
+9. [Agregat Berbasis JOIN (Alternatif Lebih Ringan)](#agregat-berbasis-join-alternatif-lebih-ringan)
+10. [WHERE EXISTS / WHERE HAS](#where-exists--where-has)
+11. [Query Kondisional](#query-kondisional)
+12. [Search](#search)
+13. [Pagination dengan calc_rows()](#pagination-dengan-calc_rows)
+14. [Query Grouping](#query-grouping)
+15. [Chunking Dataset Besar](#chunking-dataset-besar)
+16. [pluck()](#pluck)
+17. [Transaksi](#transaksi)
+18. [query() Mentah](#query-mentah)
+19. [Keamanan](#keamanan)
+20. [Praktik Terbaik](#praktik-terbaik)
+21. [Contoh Lengkap](#contoh-lengkap)
+22. [Catatan & Hal yang Perlu Diperhatikan](#catatan--hal-yang-perlu-diperhatikan)
 
 ---
 
@@ -137,13 +138,13 @@ Bagian di atas untuk memasang library ini ke aplikasi CodeIgniter 3 milik **kamu
 
 Ada dua sandbox, keduanya memakai file konfigurasi database yang **sama**:
 
-- **`tests/`** — test suite PHPUnit otomatis (117 test) yang memverifikasi string SQL hasil compile secara persis dan hasil query sungguhan. Ini cara tercepat dan paling cocok untuk CI.
-- **`test-ci3/`** — instalasi CodeIgniter 3 lengkap dengan controller smoke-test manual (`Test_custom_qb`) yang menjalankan ~68 skenario dan mencetak output teks polos beserta anotasi `(expect ...)`, bisa dilihat lewat browser.
+- **`tests/`** — test suite PHPUnit otomatis (118 test) yang memverifikasi string SQL hasil compile secara persis dan hasil query sungguhan, dijalankan **dua kali**: sekali ke MySQL, sekali lagi ke koneksi SQLite in-memory (118 skenario yang persis sama di keduanya — lihat [Dukungan Driver Database](#dukungan-driver-database)). Ini cara tercepat dan paling cocok untuk CI.
+- **`test-ci3/`** — instalasi CodeIgniter 3 lengkap dengan controller smoke-test manual (`Test_custom_qb`) yang menjalankan ~68 skenario ke MySQL dan mencetak output teks polos beserta anotasi `(expect ...)`, bisa dilihat lewat browser.
 
 ### Prasyarat
 
 - **PHP 8.1+** dan **Composer** (khusus untuk `tests/` — library-nya sendiri tetap kompatibel PHP 5.6; hanya tooling PHPUnit yang butuh PHP modern)
-- **MySQL/MariaDB** yang bisa diakses secara lokal
+- **MySQL/MariaDB** yang bisa diakses secara lokal, untuk test suite MySQL dan `test-ci3` — test suite SQLite tidak butuh apa pun selain ekstensi `sqlite3` PHP (biasanya sudah aktif secara default)
 
 ### 1. Clone dan arahkan ke database
 
@@ -172,19 +173,22 @@ Tidak perlu setup skema manual: tabel fixture `scores`, `category_scores`, dan `
 ```bash
 cd tests
 composer install
-vendor/bin/phpunit
+vendor/bin/phpunit                      # Suite MySQL (default) — perlu password di atas sudah diisi
+vendor/bin/phpunit --testsuite sqlite   # Suite SQLite — tanpa password, tanpa server, tanpa konfigurasi apa pun
 ```
 
 ```
 PHPUnit 9.6.35 by Sebastian Bergmann and contributors.
 
-...............................................................  63 / 117 ( 55%)
-...................................................             117 / 117 (100%)
+...............................................................  63 / 118 ( 53%)
+.......................................................         118 / 118 (100%)
 
-OK (117 tests, 171 assertions)
+OK (118 tests, 172 assertions)
 ```
 
-Lihat [`tests/CompiledSqlTest.php`](tests/CompiledSqlTest.php) (assertion string SQL persis) dan [`tests/ExecutionTest.php`](tests/ExecutionTest.php) (assertion hasil query sungguhan) untuk detail cakupannya.
+Kedua perintah menjalankan 118 skenario yang sama persis — `CompiledSqlTest`/`EdgeCaseTest`/`ExecutionTest` ke MySQL, `SqliteCompiledSqlTest`/`SqliteEdgeCaseTest`/`SqliteExecutionTest` ke SQLite. Lihat [`tests/CompiledSqlTest.php`](tests/CompiledSqlTest.php) (assertion string SQL persis) dan [`tests/ExecutionTest.php`](tests/ExecutionTest.php) (assertion hasil query sungguhan) untuk detail cakupannya.
+
+> **Selalu jalankan kedua suite sebagai perintah terpisah, jangan pernah digabung dalam satu pemanggilan `vendor/bin/phpunit`.** Kode escaping identifier milik CodeIgniter 3 sendiri meng-cache karakter quote-nya begitu pertama kali dipakai, jadi mencampur test berbasis MySQL dan berbasis SQLite dalam satu proses PHP yang sama membuat assertion string-SQL-persis di driver kedua gagal secara keliru — ini keanehan dari CI3, bukan bug di library ini. `tests/phpunit.xml` sudah mendefinisikan `mysql`/`sqlite` sebagai dua testsuite terpisah justru karena alasan ini.
 
 > Kalau di environment kamu ada banyak versi PHP terpasang (mis. Laragon/XAMPP) dan `php`/`composer` di `PATH` mengarah ke versi lebih lama dari 8.1, panggil binary yang benar secara eksplisit: `/path/ke/php8.1 /path/ke/composer.phar install` dan `/path/ke/php8.1 vendor/bin/phpunit`.
 
@@ -196,6 +200,23 @@ php -S 127.0.0.1:8080 index.php
 ```
 
 Lalu buka `http://127.0.0.1:8080/Test_custom_qb` di browser — akan menjalankan eager loading, `WHERE EXISTS`/`WHERE HAS`, agregat, grouping, penolakan SQL injection, dan lainnya, mencetak SQL hasil compile dan/atau hasilnya beserta komentar `(expect ...)` supaya kamu bisa cek kebenarannya langsung.
+
+---
+
+## Dukungan Driver Database
+
+Dibangun langsung di atas query builder CodeIgniter 3 sendiri yang sudah driver-agnostic, jadi sebagian besar library ini bekerja tanpa perubahan apa pun di driver CI3 mana pun yang kamu konfigurasi — quoting identifier (`` ` `` vs `"` vs `[...]`) otomatis mengikuti karakter escape driver yang aktif, tidak perlu ubah kode apa pun di sisi kamu.
+
+| Driver | Status |
+|---|---|
+| MySQL / MariaDB (`mysqli`) | ✅ Didukung penuh — target utama, 118 test |
+| SQLite (`sqlite3`) | ✅ Didukung penuh — 118 test yang sama, in-memory maupun berbasis file |
+| PostgreSQL, SQL Server, Oracle, subdriver PDO | ⚠️ Belum diuji — belum pernah dijalankan ke koneksi sungguhan |
+
+Dua hal yang perlu diketahui kalau kamu memakai driver selain MySQL:
+
+- **`calc_rows()`/`get_found_rows()`** memakai `SQL_CALC_FOUND_ROWS`/`FOUND_ROWS()` milik MySQL saat `dbdriver` adalah `mysqli`; driver lainnya otomatis memakai subquery `COUNT(*)` yang setara sebagai gantinya, jadi API publiknya (`$result->found_rows()`, `get_found_rows()`) berperilaku sama persis di kedua kasus — lihat [Pagination dengan calc_rows()](#pagination-dengan-calc_rows).
+- **Fungsi tanggal khusus MySQL** (`DATEDIFF`, `TIMESTAMPDIFF`, `CURDATE`, `CURTIME`) yang diizinkan di dalam `with_calculation()`/custom expression belum diterjemahkan ke sintaks tanggal driver lain — hindari dulu kalau kamu tidak memakai MySQL/MariaDB.
 
 ---
 
@@ -564,6 +585,8 @@ $this->db->search('admin', ['role', 'title'], false); // AND, bukan OR
 ## Pagination dengan calc_rows()
 
 > **Sudah deprecated di MySQL terbaru.** `calc_rows()`/`get_found_rows()` bergantung pada `SQL_CALC_FOUND_ROWS`, yang oleh MySQL sudah ditandai deprecated sejak versi 8.0.17 dan berpotensi dihapus total di rilis mendatang. Bagian ini tetap didokumentasikan untuk kode lama/eksisting yang sudah memakainya, tapi untuk kode baru lebih baik pakai `count_all_results()` secara terpisah (lihat [Contoh Lengkap](#contoh-lengkap)) — cara ini bekerja di semua versi MySQL, termasuk yang terbaru.
+>
+> Di driver selain `mysqli` (lihat [Dukungan Driver Database](#dukungan-driver-database)), `calc_rows()` otomatis memakai subquery `COUNT(*)` yang portable sebagai ganti `SQL_CALC_FOUND_ROWS` — API publiknya sama, hasilnya sama, hanya query di baliknya yang berbeda.
 
 ```php
 $result = $this->db->select(['id', 'name'])
